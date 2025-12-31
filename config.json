@@ -1,0 +1,13 @@
+{
+  "hotkey": "<ctrl>+<alt>+<shift>+j",
+  "language": "ja",
+  "model_path": "./models/ggml-small.bin",
+  "whisper_cli_path": "./bin/whisper-cli.exe",
+  "auto_paste": false,
+  "keep_trailing_newline": false,
+  "temp_dir": "",
+  "audio_device": null,
+  "sample_rate": 16000,
+  "n_gpu_layers": 60,
+  "sound_enabled": true
+}

@@ -1,0 +1,8 @@
+sounddevice
+numpy
+scipy
+pystray
+Pillow
+pynput
+pyperclip
+pydantic

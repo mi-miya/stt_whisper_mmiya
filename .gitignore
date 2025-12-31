@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+.venv
+venv/
+env/
+
+# Logs
+logs/
+*.log
+
+# Whisper Models & Binaries
+models/
+bin/
+
+# Audio files
+*.wav
+*.mp3
+*.m4a
+
+# Windows / OS
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# Editor / IDE
+.vscode/
+.idea/
