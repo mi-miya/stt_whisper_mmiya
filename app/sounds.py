@@ -22,8 +22,21 @@ def beep_finish():
     except Exception as e:
         logger.error(f"Failed to play finish sound: {e}")
 
+def beep_cancel():
+    if not current_settings.sound_enabled:
+        return
+    try:
+        # Descending tone for cancellation
+        winsound.Beep(800, 100)
+        winsound.Beep(500, 100)
+    except Exception as e:
+        logger.error(f"Failed to play cancel sound: {e}")
+
 def play_start():
     threading.Thread(target=beep_start, daemon=True).start()
 
 def play_finish():
     threading.Thread(target=beep_finish, daemon=True).start()
+
+def play_cancel():
+    threading.Thread(target=beep_cancel, daemon=True).start()

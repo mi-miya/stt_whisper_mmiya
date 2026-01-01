@@ -2,6 +2,8 @@ import pystray
 from PIL import Image, ImageDraw
 import threading
 import sys
+import ctypes
+import time
 from .settings import current_settings
 from .logger import logger
 from .recorder import Recorder
@@ -14,6 +16,8 @@ from . import sounds
 IDLE = "IDLE"
 RECORDING = "RECORDING"
 TRANSCRIBING = "TRANSCRIBING"
+
+VK_ESCAPE = 0x1B
 
 class MainApp:
     def __init__(self):
@@ -82,6 +86,32 @@ class MainApp:
         self.recorder.start()
         self.state = RECORDING
         self.update_icon_state()
+
+        # Start monitoring for Esc key
+        threading.Thread(target=self._monitor_cancellation, daemon=True).start()
+
+    def _monitor_cancellation(self):
+        logger.info("Started cancellation monitor")
+        while self.state == RECORDING:
+            # Check if Esc is pressed
+            # GetAsyncKeyState returns short (16-bit). MSB set means key is down.
+            if ctypes.windll.user32.GetAsyncKeyState(VK_ESCAPE) & 0x8000:
+                logger.info("Esc pressed! Cancelling...")
+                self.cancel_recording()
+                break
+            time.sleep(0.05) # Poll every 50ms
+
+    def cancel_recording(self):
+        with self.lock:
+            if self.state != RECORDING:
+                return
+
+            logger.info("Cancelling recording...")
+            self.recorder.stop(discard=True)
+            self.state = IDLE
+            self.update_icon_state()
+            sounds.play_cancel()
+
 
     def stop_and_transcribe(self):
         logger.info("Hotkey: Stop Recording")

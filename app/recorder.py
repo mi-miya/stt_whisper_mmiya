@@ -49,7 +49,7 @@ class Recorder:
             logger.error(f"Failed to start recording: {e}")
             self.is_recording = False
 
-    def stop(self) -> str:
+    def stop(self, discard=False) -> str:
         if not self.is_recording:
             return ""
 
@@ -58,6 +58,11 @@ class Recorder:
             self.stream.close()
             self.is_recording = False
             logger.info("Recording stopped")
+
+            if discard:
+                logger.info("Recording discarded")
+                self.frames = [] # clear frames
+                return ""
 
             if not self.frames:
                 logger.warning("No frames recorded")
