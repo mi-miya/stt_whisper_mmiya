@@ -142,6 +142,8 @@ vbsファイルのショートカット作成は少し手間がかかります�
 
 `config.json` というファイルをメモ帳で開くと、細かい設定を変更できます。
 
+> 📁 **config.json がない場合**: このフォルダに `config.default.json` があります。これをコピーして `config.json` を作成してください。`config.json` は個人設定用なので、リポジトリには含まれていません。
+
 **主な設定項目:**
 - **`"sound_enabled"`**: 効果音のオン/オフ
   - `true`: 音あり（デフォルト）
@@ -160,13 +162,73 @@ vbsファイルのショートカット作成は少し手間がかかります�
   - `true`: 変換後、自動的に貼り付けまで行う
   - `false`: クリップボードにコピーのみ（手動で `Ctrl+V` で貼り付け）
 
+- **`"language"`**: 認識言語の設定
+  - `"ja"`: 日本語（デフォルト）
+  - `"en"`: 英語など、他の言語コードに変更可能
+
+- **`"model_path"`**: 使用するAIモデルのパス
+  - `"./models/ggml-medium.bin"`: デフォルト
+  - 他のモデルファイルのパスに変更可能
+
+- **`"whisper_cli_path"`**: Whisper CLI実行ファイルのパス
+  - `"./bin/whisper-cli.exe"`: デフォルト
+  - 必要に応じて変更
+
+- **`"keep_trailing_newline"`**: 末尾の改行を保持するかどうか
+  - `false`: 保持しない（デフォルト）
+  - `true`: 保持する
+
+- **`"temp_dir"`**: 一時ファイル保存ディレクトリ
+  - `""`: デフォルト（システムの一時ディレクトリを使用）
+  - 特定のパスを指定可能
+
+- **`"audio_device"`**: 使用するオーディオデバイス
+  - `null`: デフォルト（システムデフォルト）
+  - デバイス番号を指定可能
+
+- **`"sample_rate"`**: オーディオサンプルレート
+  - `44100`: デフォルト
+  - 他のレートに変更可能
+
+- **`"initial_prompt"`**: 初期プロンプト（認識精度向上のためのヒント）
+  - 日本語のデフォルトプロンプトが設定されています
+  - 必要に応じて変更
+
+- **`"best_of"`**: ベストオブパラメータ（変換候補数）
+  - `5`: デフォルト
+  - 数値を変更可能
+
+- **`"beam_size"`**: ビームサイズ（検索幅）
+  - `5`: デフォルト
+  - 数値を変更可能
+
+- **`"temperature"`**: 温度パラメータ（ランダム性）
+  - `0.0`: デフォルト（決定論的）
+  - 0.0-1.0の範囲で変更可能
+
+- **`"carry_initial_prompt"`**: 初期プロンプトを継続して使用するかどうか
+  - `true`: 使用する（デフォルト）
+  - `false`: 使用しない
+
 **設定例:**
 ```json
 {
   "sound_enabled": true,
   "n_gpu_layers": 99,
   "hotkey": "ctrl+alt+shift+j",
-  "auto_paste": false
+  "auto_paste": false,
+  "language": "ja",
+  "model_path": "./models/ggml-medium.bin",
+  "whisper_cli_path": "./bin/whisper-cli.exe",
+  "keep_trailing_newline": false,
+  "temp_dir": "",
+  "audio_device": null,
+  "sample_rate": 44100,
+  "initial_prompt": "日本語の音声認識を行います。以下の文章は日本語で、日常会話やビジネス文書の内容です。句読点や改行を適切に挿入してください。専門用語や固有名詞は正確に認識してください。",
+  "best_of": 5,
+  "beam_size": 5,
+  "temperature": 0.0,
+  "carry_initial_prompt": true
 }
 ```
 
@@ -234,6 +296,11 @@ NVIDIA製のグラフィックボード（GeForceなど）をお持ちの方は�
 2. **GPUを使う**（NVIDIA GeForce などのGPUをお持ちの場合）:
    - GPU版の Whisper（`whisper-cublas-12.4.0-bin-x64.zip`）を `bin` フォルダにコピー
    - `config.json` の `"n_gpu_layers"` を `99` に変更
+3. **他のアプリケーションを閉じる**: ブラウザや動画再生ソフトなど、CPUやメモリを多く使うアプリを終了させてみてください
+4. **システムを再起動する**: 一時的な負荷をクリアするために、パソコンを再起動してみてください
+5. **サンプルレートを下げる**: `config.json` の `"sample_rate"` を `22050` などに変更して、処理負荷を軽減
+6. **変換パラメータを調整**: `config.json` の `"best_of"` や `"beam_size"` を `3` などの小さい値に変更
+7. **CPU使用時はGPU設定を確認**: `config.json` の `"n_gpu_layers"` が `0` になっているか確認（GPU版を使用していない場合）
 
 ### 音が鳴らない
 

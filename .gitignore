@@ -29,3 +29,6 @@ $RECYCLE.BIN/
 # Editor / IDE
 .vscode/
 .idea/
+
+# Configuration
+config.json

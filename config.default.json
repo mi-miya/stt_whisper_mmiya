@@ -1,0 +1,18 @@
+{
+  "hotkey": "<ctrl>+<alt>+<shift>+<j>",
+  "language": "ja",
+  "model_path": "./models/ggml-medium.bin",
+  "whisper_cli_path": "./bin/whisper-cli.exe",
+  "auto_paste": true,
+  "keep_trailing_newline": false,
+  "temp_dir": "",
+  "audio_device": null,
+  "sample_rate": 44100,
+  "n_gpu_layers": 60,
+  "initial_prompt": "日本語の音声認識を行います。以下の文章は日本語で、日常会話やビジネス文書の内容です。句読点や改行を適切に挿入してください。専門用語や固有名詞は正確に認識してください。",
+  "sound_enabled": true,
+  "best_of": 5,
+  "beam_size": 5,
+  "temperature": 0.0,
+  "carry_initial_prompt": true
+}
