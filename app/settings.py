@@ -17,6 +17,10 @@ class Settings(BaseModel):
     n_gpu_layers: int = 0
     initial_prompt: str = ""
     sound_enabled: bool = True
+    best_of: int = 5
+    beam_size: int = 5
+    temperature: float = 0.0
+    carry_initial_prompt: bool = False
 
     def resolve_paths(self):
         # Resolve relative paths

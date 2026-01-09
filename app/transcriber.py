@@ -31,8 +31,17 @@ class Transcriber:
         if current_settings.initial_prompt:
              cmd.extend(["--prompt", current_settings.initial_prompt])
 
-        # Note: Current version of whisper-cli detects GPU automatically if DLLs are present.
-        # -ngl option is invalid for this binary version.
+        if current_settings.carry_initial_prompt:
+             cmd.append("--carry-initial-prompt")
+
+        if current_settings.best_of != 5:
+             cmd.extend(["--best-of", str(current_settings.best_of)])
+
+        if current_settings.beam_size != 5:
+             cmd.extend(["--beam-size", str(current_settings.beam_size)])
+
+        if current_settings.temperature != 0.0:
+             cmd.extend(["--temperature", str(current_settings.temperature)])
 
         logger.info(f"Running transcription: {' '.join(cmd)}")
 
