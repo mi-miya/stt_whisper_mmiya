@@ -117,7 +117,8 @@ class MainApp:
         logger.info("Hotkey: Stop Recording")
         audio_file = self.recorder.stop()
         if not audio_file:
-            # Failed to record or short
+            # Failed to record or short or silent
+            logger.info("Recording was silent or invalid. Returning to IDLE.")
             self.state = IDLE
             self.update_icon_state()
             return

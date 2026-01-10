@@ -14,5 +14,6 @@
   "best_of": 5,
   "beam_size": 5,
   "temperature": 0.0,
-  "carry_initial_prompt": true
+  "carry_initial_prompt": true,
+  "silence_threshold": 500
 }

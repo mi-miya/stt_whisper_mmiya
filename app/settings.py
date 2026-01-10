@@ -21,6 +21,7 @@ class Settings(BaseModel):
     beam_size: int = 5
     temperature: float = 0.0
     carry_initial_prompt: bool = False
+    silence_threshold: int = 500
 
     def resolve_paths(self):
         # Resolve relative paths
