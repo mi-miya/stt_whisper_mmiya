@@ -68,7 +68,7 @@ class Transcriber:
 
             # Retrieve output.
             # whisper-cli typically outputs to stdout with -nt.
-            text = result.stdout.strip()
+            text = result.stdout.strip().replace(" ", "")
 
             # Some versions might output logs to stdout or stderr.
             # If text is empty, check stderr just in case or if output file was generated.
