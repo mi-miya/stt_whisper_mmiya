@@ -1,13 +1,16 @@
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 import threading
+import sys
+import os
 from .logger import logger
 
 class FloatingWidget:
-    def __init__(self, on_click_callback, on_exit_callback):
+    def __init__(self, on_click_callback, on_exit_callback, on_settings_callback=None):
         self.root = tk.Tk()
         self.on_click_callback = on_click_callback
         self.on_exit_callback = on_exit_callback
+        self.on_settings_callback = on_settings_callback
 
         # Window configuration
         self.root.overrideredirect(True)  # Frameless
@@ -37,7 +40,9 @@ class FloatingWidget:
         self.canvas.bind("<Button-3>", self.show_context_menu) # Right click
 
         self.menu = tk.Menu(self.root, tearoff=0)
-        self.menu.add_command(label="Exit", command=self.exit_app)
+        self.menu.add_command(label="設定", command=self.show_settings)
+        self.menu.add_separator()
+        self.menu.add_command(label="終了", command=self.exit_app)
 
         self.start_x = 0
         self.start_y = 0
@@ -71,6 +76,11 @@ class FloatingWidget:
 
     def show_context_menu(self, event):
         self.menu.post(event.x_root, event.y_root)
+
+    def show_settings(self):
+        """設定ダイアログを表示"""
+        if self.on_settings_callback:
+            self.on_settings_callback()
 
     def exit_app(self):
         if self.on_exit_callback:

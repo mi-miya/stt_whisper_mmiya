@@ -1,30 +1,56 @@
 import subprocess
 import os
+import re
 from pathlib import Path
 from .settings import current_settings
 from .logger import logger
+from .error_handler import show_error
+
+
+def extract_language_code(language: str) -> str:
+    """言語設定から言語コードを抽出する
+
+    "日本語 (ja)" -> "ja"
+    "ja" -> "ja"
+    """
+    # "(xx)" パターンを探す
+    match = re.search(r'\(([a-z]{2,})\)', language)
+    if match:
+        return match.group(1)
+    # すでにコードのみの場合
+    return language
+
 
 class Transcriber:
     def __init__(self):
         self.cli_path = current_settings.whisper_cli_path
         self.model_path = current_settings.model_path
+        self._cli_error_shown = False
+        self._model_error_shown = False
 
     def transcribe(self, audio_file: str) -> str:
         if not os.path.exists(self.cli_path):
-             logger.error(f"Whisper CLI not found at {self.cli_path}")
-             return ""
+            logger.error(f"Whisper CLI not found at {self.cli_path}")
+            if not self._cli_error_shown:
+                self._cli_error_shown = True
+                show_error("whisper_not_found", self.cli_path)
+            return ""
 
         if not os.path.exists(self.model_path):
-             logger.error(f"Model file not found at {self.model_path}")
-             return ""
+            logger.error(f"Model file not found at {self.model_path}")
+            if not self._model_error_shown:
+                self._model_error_shown = True
+                show_error("model_not_found", self.model_path)
+            return ""
 
         # Build command: whisper-cli -m model -f wav -l lang -nt
         # -nt: no timestamps (output just text)
+        language_code = extract_language_code(current_settings.language)
         cmd = [
             self.cli_path,
             "-m", self.model_path,
             "-f", audio_file,
-            "-l", current_settings.language,
+            "-l", language_code,
             "-nt"
         ]
 
@@ -58,12 +84,18 @@ class Transcriber:
                 capture_output=True,
                 text=True,
                 encoding='utf-8',
+                errors='replace',
                 startupinfo=startupinfo
             )
 
             if result.returncode != 0:
                 logger.error(f"Transcription process failed with code {result.returncode}")
                 logger.error(f"Stderr: {result.stderr}")
+                # GPU メモリエラーの検出
+                if "CUDA" in result.stderr or "GPU" in result.stderr or "memory" in result.stderr.lower():
+                    show_error("gpu_error", result.stderr[:200])
+                else:
+                    show_error("transcription_failed", f"Exit code: {result.returncode}")
                 return ""
 
             # Retrieve output.

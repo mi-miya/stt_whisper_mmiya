@@ -1,11 +1,31 @@
-import sounddevice as sd
-import numpy as np
-import scipy.io.wavfile as wav
+# 遅延インポート用（メモリ最適化）
+# sounddevice, numpy, scipy は録音開始時に初めてインポートされる
 import tempfile
 import time
 from pathlib import Path
 from .settings import current_settings
 from .logger import logger
+from .error_handler import show_error
+
+# グローバル変数（遅延インポート後に設定）
+_sd = None
+_np = None
+_wav = None
+
+
+def _lazy_import():
+    """numpy, sounddevice, scipy を遅延インポート"""
+    global _sd, _np, _wav
+    if _sd is None:
+        import sounddevice as sd
+        import numpy as np
+        import scipy.io.wavfile as wav
+        _sd = sd
+        _np = np
+        _wav = wav
+        logger.info("Audio libraries loaded (lazy import)")
+    return _sd, _np, _wav
+
 
 class Recorder:
     def __init__(self):
@@ -56,6 +76,9 @@ class Recorder:
             return
 
         try:
+            # 遅延インポート
+            sd, np, wav = _lazy_import()
+
             self.frames = []
             self.stream = sd.InputStream(
                 samplerate=self.sample_rate,
@@ -70,12 +93,16 @@ class Recorder:
         except Exception as e:
             logger.error(f"Failed to start recording: {e}")
             self.is_recording = False
+            show_error("recording_failed", str(e))
 
     def stop(self, discard=False) -> str:
         if not self.is_recording:
             return ""
 
         try:
+            # 遅延インポート
+            sd, np, wav = _lazy_import()
+
             self.stream.stop()
             self.stream.close()
             self.is_recording = False
@@ -83,7 +110,7 @@ class Recorder:
 
             if discard:
                 logger.info("Recording discarded")
-                self.frames = [] # clear frames
+                self.frames = []  # clear frames
                 return ""
 
             if not self.frames:
@@ -105,8 +132,8 @@ class Recorder:
             logger.info(f"Audio Stats: RMS={rms:.2f}, Max={max_amp:.2f}")
 
             if max_amp < current_settings.silence_threshold:
-               logger.info(f"Audio ignored: detailed silence check (Max Amp {max_amp:.2f} < {current_settings.silence_threshold})")
-               return ""
+                logger.info(f"Audio ignored: detailed silence check (Max Amp {max_amp:.2f} < {current_settings.silence_threshold})")
+                return ""
 
             # -----------------
 

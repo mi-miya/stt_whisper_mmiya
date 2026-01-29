@@ -4,7 +4,8 @@ import threading
 import sys
 import ctypes
 import time
-from .settings import current_settings
+from pathlib import Path
+from .settings import current_settings, load_settings_as_dict, save_settings
 from .logger import logger
 from .recorder import Recorder
 from .transcriber import Transcriber
@@ -155,6 +156,50 @@ class MainApp:
         logger.info("System tray initialized.")
         self.icon.run()
 
+    def show_settings_dialog(self):
+        """設定ダイアログを表示"""
+        if not self.gui:
+            return
+
+        # 遅延インポート
+        from .settings_dialog import SettingsDialog
+
+        current_dict = load_settings_as_dict()
+
+        def on_save(new_settings: dict):
+            if save_settings(new_settings):
+                logger.info("Settings saved. Restarting application...")
+                self.restart_app()
+
+        SettingsDialog(self.gui.root, current_dict, on_save)
+
+    def restart_app(self):
+        """アプリケーションを再起動"""
+        logger.info("Restarting application...")
+
+        # 現在のプロセスを終了して再起動
+        python = sys.executable
+        script = sys.argv[0]
+
+        # リソースをクリーンアップ
+        if self.icon:
+            try:
+                self.icon.stop()
+            except:
+                pass
+        if self.hotkey_thread:
+            try:
+                self.hotkey_thread.stop()
+            except:
+                pass
+
+        # 新しいプロセスを起動
+        import subprocess
+        subprocess.Popen([python, "-m", "app.main"], cwd=str(Path.cwd()))
+
+        # 現在のプロセスを終了
+        sys.exit(0)
+
     def exit_app(self, icon, item):
         logger.info("Exit requested")
         if self.icon:
@@ -167,42 +212,74 @@ import signal
 import time
 from .gui import FloatingWidget
 
+
+def check_first_run() -> bool:
+    """初回起動かどうかをチェック"""
+    config_path = Path.cwd() / "config.json"
+    return not config_path.exists()
+
+
+def run_setup_wizard_and_start():
+    """セットアップウィザードを実行してからアプリを起動"""
+    from .setup_wizard import SetupWizard
+
+    def on_complete(settings):
+        logger.info("Setup wizard completed, starting app...")
+        # アプリを再起動（設定を反映するため）
+        import subprocess
+        subprocess.Popen([sys.executable, "-m", "app.main"], cwd=str(Path.cwd()))
+        sys.exit(0)
+
+    def on_cancel():
+        logger.info("Setup wizard cancelled")
+        sys.exit(0)
+
+    wizard = SetupWizard(on_complete, on_cancel)
+    wizard.run()
+
+
 if __name__ == "__main__":
-    app = MainApp()
+    # 初回起動チェック
+    if check_first_run():
+        logger.info("First run detected, starting setup wizard...")
+        run_setup_wizard_and_start()
+    else:
+        app = MainApp()
 
-    # Initialize GUI
-    app.gui = FloatingWidget(
-        on_click_callback=app.on_hotkey, # Re-use toggle logic
-        on_exit_callback=lambda: app.exit_app(None, None)
-    )
+        # Initialize GUI
+        app.gui = FloatingWidget(
+            on_click_callback=app.on_hotkey,  # Re-use toggle logic
+            on_exit_callback=lambda: app.exit_app(None, None),
+            on_settings_callback=app.show_settings_dialog
+        )
 
-    # Override exit to close GUI too
-    original_exit = app.exit_app
-    def exit_wrapper(icon, item):
-        logger.info("Exit wrapper called")
-        if app.gui:
-            app.gui.quit()
-        original_exit(icon, item)
+        # Override exit to close GUI too
+        original_exit = app.exit_app
+        def exit_wrapper(icon, item):
+            logger.info("Exit wrapper called")
+            if app.gui:
+                app.gui.quit()
+            original_exit(icon, item)
 
-    app.exit_app = exit_wrapper
+        app.exit_app = exit_wrapper
 
-    # Handle Ctrl+C
-    def signal_handler(sig, frame):
-        logger.info("Ctrl+C detected")
-        exit_wrapper(None, None)
+        # Handle Ctrl+C
+        def signal_handler(sig, frame):
+            logger.info("Ctrl+C detected")
+            exit_wrapper(None, None)
 
-    signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGINT, signal_handler)
 
-    # Run Tray in background thread
-    tray_thread = threading.Thread(target=app.run_tray, daemon=True)
-    tray_thread.start()
+        # Run Tray in background thread
+        tray_thread = threading.Thread(target=app.run_tray, daemon=True)
+        tray_thread.start()
 
-    # Run Hotkey in background thread (MainApp.run logic split)
-    app.run_hotkey()
+        # Run Hotkey in background thread (MainApp.run logic split)
+        app.run_hotkey()
 
-    # Run GUI on Main Thread (Blocking)
-    logger.info("Starting GUI...")
-    try:
-        app.gui.run()
-    except KeyboardInterrupt:
-        signal_handler(None, None)
+        # Run GUI on Main Thread (Blocking)
+        logger.info("Starting GUI...")
+        try:
+            app.gui.run()
+        except KeyboardInterrupt:
+            signal_handler(None, None)
