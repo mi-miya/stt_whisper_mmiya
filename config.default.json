@@ -7,7 +7,7 @@
   "keep_trailing_newline": false,
   "temp_dir": "",
   "audio_device": null,
-  "sample_rate": 44100,
+  "sample_rate": 48000,
   "n_gpu_layers": 60,
   "initial_prompt": "日本語の音声認識を行います。以下の文章は日本語で、日常会話やビジネス文書の内容です。句読点や改行を適切に挿入してください。専門用語や固有名詞は正確に認識してください。",
   "sound_enabled": true,
@@ -15,5 +15,10 @@
   "beam_size": 5,
   "temperature": 0.0,
   "carry_initial_prompt": true,
-  "silence_threshold": 500
+  "silence_threshold": 500,
+  "noise_floor": 200,
+  "input_mode": "manual",
+  "vad_aggressiveness": 2,
+  "vad_silence_duration": 1.2,
+  "min_recording_duration": 0.8
 }
