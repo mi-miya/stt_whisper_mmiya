@@ -231,7 +231,7 @@ class MainApp:
                     set_text(text)
                     if current_settings.auto_paste:
                         paste_text()
-                    sounds.play_finish()
+                    # VADモードでは個々の文字起こし完了時にビープ音を鳴らさない
             finally:
                 self.recorder.cleanup_file(audio_file)
                 self._transcribe_queue.task_done()
@@ -241,6 +241,7 @@ class MainApp:
     def start_listening(self):
         """Start VAD auto mode listening."""
         logger.info("VAD Auto: Start Listening")
+        sounds.play_start()  # VADモード開始のビープ音
         self.state = LISTENING
         self.update_icon_state()
         self.recorder.start_monitoring()
@@ -272,6 +273,8 @@ class MainApp:
             if self.state == LISTENING:
                 self.state = IDLE
                 self.update_icon_state()
+
+        sounds.play_finish()  # VADモード終了のビープ音
 
     def _vad_listen_loop(self, stop_event):
         """VAD auto mode main loop with FIFO transcription using WebRTC VAD."""

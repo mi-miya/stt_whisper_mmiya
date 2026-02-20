@@ -177,8 +177,8 @@ class SettingsDialog:
         # ダイアログウィンドウ作成
         self.window = tk.Toplevel(parent)
         self.window.title("設定")
-        self.window.geometry("520x480")
-        self.window.resizable(False, False)
+        self.window.geometry("600x650")  # サイズを拡大してボタンが見えるように
+        self.window.resizable(True, True)  # リサイズ可能に変更
 
         # モーダルダイアログとして設定
         self.window.transient(parent)
@@ -216,7 +216,11 @@ class SettingsDialog:
         self.var_min_recording_duration = tk.DoubleVar(value=s.get('min_recording_duration', 1.0))
         self.var_language = tk.StringVar(value=s.get('language', 'ja'))
         self.var_auto_paste = tk.BooleanVar(value=s.get('auto_paste', False))
-        self.var_sound_enabled = tk.BooleanVar(value=s.get('sound_enabled', True))
+
+        # sound_enabledの初期化（デバッグログ付き）
+        sound_enabled_value = s.get('sound_enabled', True)
+        logger.info(f"Initializing sound_enabled with value: {sound_enabled_value}")
+        self.var_sound_enabled = tk.BooleanVar(value=sound_enabled_value)
 
         # 詳細設定
         self.var_n_gpu_layers = tk.IntVar(value=s.get('n_gpu_layers', 0))
@@ -348,7 +352,23 @@ class SettingsDialog:
         ttk.Checkbutton(tab, text="自動貼り付け (Ctrl+V を自動実行)", variable=self.var_auto_paste).grid(row=row, column=0, columnspan=2, sticky='w', pady=5)
         row += 1
 
-        ttk.Checkbutton(tab, text="効果音を鳴らす", variable=self.var_sound_enabled).grid(row=row, column=0, columnspan=2, sticky='w', pady=5)
+        # ビープ音のチェックボックス（デバッグログ付き）
+        def on_sound_toggle():
+            new_value = self.var_sound_enabled.get()
+            logger.info(f"Sound enabled toggled: {new_value}")
+            # チェックボックスの状態を確認
+            logger.info(f"Checkbox widget state: {self.sound_checkbox.state()}")
+
+        self.sound_checkbox = ttk.Checkbutton(
+            tab,
+            text="効果音を鳴らす",
+            variable=self.var_sound_enabled,
+            command=on_sound_toggle
+        )
+        self.sound_checkbox.grid(row=row, column=0, columnspan=2, sticky='w', pady=5)
+
+        # 初期状態をログに記録
+        logger.info(f"Sound checkbox created. Initial value: {self.var_sound_enabled.get()}, Widget state: {self.sound_checkbox.state()}")
         row += 1
 
         # 説明
@@ -637,6 +657,7 @@ class SettingsDialog:
 
     def _on_save(self):
         """保存ボタンのハンドラ"""
+        logger.info("=== Save button clicked ===")
         try:
             # 設定を収集
             new_settings = self.settings.copy()
@@ -656,7 +677,11 @@ class SettingsDialog:
             new_settings['min_recording_duration'] = round(self.var_min_recording_duration.get(), 1)
             new_settings['language'] = self.var_language.get()
             new_settings['auto_paste'] = self.var_auto_paste.get()
-            new_settings['sound_enabled'] = self.var_sound_enabled.get()
+
+            # sound_enabledの保存（デバッグログ付き）
+            sound_enabled_save = self.var_sound_enabled.get()
+            logger.info(f"Saving sound_enabled with value: {sound_enabled_save}")
+            new_settings['sound_enabled'] = sound_enabled_save
 
             # 詳細設定
             new_settings['n_gpu_layers'] = self.var_n_gpu_layers.get()
@@ -681,7 +706,9 @@ class SettingsDialog:
                 new_settings['vad_hotkey'] = vad_hotkey
 
             # コールバックを呼び出し
+            logger.info("Calling save callback...")
             self.on_save(new_settings)
+            logger.info("Settings saved successfully, closing dialog...")
             self.window.destroy()
 
         except Exception as e:
