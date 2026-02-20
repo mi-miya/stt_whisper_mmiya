@@ -157,8 +157,8 @@ class MainApp:
 
             logger.info("Cancelling recording...")
 
-            # VADモードの場合はLISTENINGに戻る、それ以外はIDLE
-            if current_settings.input_mode == "vad_auto" and self._vad_stop_event and not self._vad_stop_event.is_set():
+            # VADモードの場合はLISTENINGに戻る（_vad_stop_eventがアクティブな場合）
+            if self._vad_stop_event and not self._vad_stop_event.is_set():
                 should_resume_vad = True
                 self.state = LISTENING
             else:
@@ -241,11 +241,21 @@ class MainApp:
     def start_listening(self):
         """Start VAD auto mode listening."""
         logger.info("VAD Auto: Start Listening")
+
+        # 前のセッションのクリーンアップ
+        self._cleanup_previous_vad_session()
+
         sounds.play_start()  # VADモード開始のビープ音
-        self.state = LISTENING
-        self.update_icon_state()
+
+        with self.lock:
+            self.state = LISTENING
+            self.update_icon_state()
+
         self.recorder.start_monitoring()
         self._vad_stop_event = threading.Event()
+
+        # 新しいキューを作成（前のセッションの残骸を確実に除去）
+        self._transcribe_queue = queue.Queue()
 
         # Start FIFO transcription worker
         self._transcribe_worker_thread = threading.Thread(
@@ -266,8 +276,17 @@ class MainApp:
             self._vad_stop_event.set()
         self.recorder.stop_monitoring()
 
+        # キューをクリア（残っているアイテムの一時ファイルを削除）
+        self._clear_transcribe_queue()
+
         # Stop FIFO worker by sending poison pill
         self._transcribe_queue.put(None)
+
+        # ワーカースレッドの終了を待機（タイムアウト付き）
+        if self._transcribe_worker_thread and self._transcribe_worker_thread.is_alive():
+            self._transcribe_worker_thread.join(timeout=2.0)
+            if self._transcribe_worker_thread.is_alive():
+                logger.warning("Transcribe worker thread did not stop in time")
 
         with self.lock:
             if self.state == LISTENING:
@@ -275,6 +294,37 @@ class MainApp:
                 self.update_icon_state()
 
         sounds.play_finish()  # VADモード終了のビープ音
+
+    def _cleanup_previous_vad_session(self):
+        """前のVADセッションのリソースをクリーンアップ"""
+        # 前のstop_eventを設定
+        if self._vad_stop_event and not self._vad_stop_event.is_set():
+            logger.warning("Previous VAD session was not properly stopped, cleaning up")
+            self._vad_stop_event.set()
+
+        # 前のワーカースレッドの終了を待機
+        if self._transcribe_worker_thread and self._transcribe_worker_thread.is_alive():
+            self._transcribe_queue.put(None)  # ポイズンピル
+            self._transcribe_worker_thread.join(timeout=1.0)
+            if self._transcribe_worker_thread.is_alive():
+                logger.warning("Previous worker thread did not stop, proceeding anyway")
+
+        # キューをクリア
+        self._clear_transcribe_queue()
+
+    def _clear_transcribe_queue(self):
+        """キューに残っているアイテムをクリアし、一時ファイルを削除"""
+        cleared_count = 0
+        while True:
+            try:
+                audio_file = self._transcribe_queue.get_nowait()
+                if audio_file is not None:
+                    self.recorder.cleanup_file(audio_file)
+                    cleared_count += 1
+            except queue.Empty:
+                break
+        if cleared_count > 0:
+            logger.info(f"Cleared {cleared_count} items from transcribe queue")
 
     def _vad_listen_loop(self, stop_event):
         """VAD auto mode main loop with FIFO transcription using WebRTC VAD."""
@@ -356,15 +406,16 @@ class MainApp:
                         logger.info(f"VAD: Silence detected, stopping recording (duration: {recording_duration:.2f}s)")
                         audio_file = self.recorder.stop()
 
+                        should_start_monitoring = False
                         with self.lock:
                             # VADモードがまだアクティブな場合のみLISTENINGに戻る
                             if not stop_event.is_set() and self.state == RECORDING:
                                 self.state = LISTENING
                                 self.update_icon_state()
+                                should_start_monitoring = True
 
-                        # モニタリング再開（次の発話を検知可能に）
-                        # ただし、VADモードがまだアクティブな場合のみ
-                        if not stop_event.is_set() and self.state == LISTENING:
+                        # モニタリング再開（フラグで制御して競合を回避）
+                        if should_start_monitoring and not stop_event.is_set():
                             self.recorder.start_monitoring()
 
                         # 録音時間が短すぎる場合はスキップ（咳、息継ぎなど）

@@ -45,13 +45,16 @@ class Recorder:
         # WebRTC VAD設定
         self._vad = None
         self._vad_frame_duration = 20  # ms (10, 20, 30のいずれか)
-        self._vad_frame_size = int(self.sample_rate * self._vad_frame_duration / 1000)  # 48000 * 20 / 1000 = 960
+        self._vad_frame_size = int(self.sample_rate * self._vad_frame_duration / 1000)
         self._last_vad_result = False
+        self._vad_error_count = 0
+        self._max_vad_errors = 10  # この回数を超えたらVADを再初期化
 
         # プリバッファ: モニタリング中の直近音声を保持（発話開始時の音声が切れないように）
-        # 0.5秒分のフレームを保持
         self._prebuffer_duration = 0.5  # 秒
-        self._prebuffer = deque(maxlen=50)  # 十分な数のフレームを保持
+        # フレーム数を動的に計算（0.5秒 / 20ms = 25フレーム）
+        prebuffer_frames = int(self._prebuffer_duration * 1000 / self._vad_frame_duration)
+        self._prebuffer = deque(maxlen=prebuffer_frames)
 
         # Ensure temp directory exists
         try:
@@ -210,14 +213,20 @@ class Recorder:
 
     def start_monitoring(self):
         """Start lightweight monitoring stream for VAD auto mode."""
+        # 既存のストリームがある場合は先に停止
         if self._monitor_stream is not None:
-            return
+            logger.warning("Monitor stream already exists, stopping it first")
+            self.stop_monitoring()
+
         sd, np, _, webrtcvad = _lazy_import()
 
-        # WebRTC VADを初期化
-        if self._vad is None:
-            self._vad = webrtcvad.Vad(current_settings.vad_aggressiveness)
-            logger.info(f"WebRTC VAD initialized (aggressiveness={current_settings.vad_aggressiveness})")
+        # WebRTC VADを常に再初期化（設定変更を反映するため）
+        self._vad = webrtcvad.Vad(current_settings.vad_aggressiveness)
+        logger.info(f"WebRTC VAD initialized (aggressiveness={current_settings.vad_aggressiveness})")
+
+        # VAD状態をリセット
+        self._last_vad_result = False
+        self._vad_error_count = 0
 
         # プリバッファをクリア
         self._prebuffer.clear()
@@ -234,10 +243,20 @@ class Recorder:
             audio_bytes = indata[:, 0].tobytes() if indata.ndim > 1 else indata.tobytes()
             try:
                 self._last_vad_result = self._vad.is_speech(audio_bytes, self.sample_rate)
+                self._vad_error_count = 0  # 成功したらエラーカウントをリセット
             except Exception as e:
-                # フレームサイズが合わない場合などはFalseにする
-                logger.error(f"VAD判定エラー（モニタリング中）: {e}, frame_size={len(audio_bytes)}, expected={self._vad_frame_size*2}")
+                self._vad_error_count += 1
+                logger.error(f"VAD判定エラー（モニタリング中）: {e}, error_count={self._vad_error_count}")
                 self._last_vad_result = False
+
+                # エラーが連続する場合はVADを再初期化
+                if self._vad_error_count >= self._max_vad_errors:
+                    logger.warning("Too many VAD errors, reinitializing VAD")
+                    try:
+                        self._vad = webrtcvad.Vad(current_settings.vad_aggressiveness)
+                        self._vad_error_count = 0
+                    except Exception as reinit_error:
+                        logger.error(f"Failed to reinitialize VAD: {reinit_error}")
 
         try:
             # WebRTC VADに適したフレームサイズ（20ms = 960サンプル @48kHz）
@@ -266,6 +285,7 @@ class Recorder:
             finally:
                 self._monitor_stream = None
                 self._last_amplitude = 0.0
+                self._last_vad_result = False  # VAD状態もリセット
                 logger.info("Monitoring stream stopped")
 
     def get_current_amplitude(self) -> float:
