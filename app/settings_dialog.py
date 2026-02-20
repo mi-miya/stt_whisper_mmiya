@@ -210,6 +210,10 @@ class SettingsDialog:
         s = self.settings
 
         # 基本設定
+        self.var_input_mode = tk.StringVar(value=s.get('input_mode', 'manual'))
+        self.var_vad_aggressiveness = tk.IntVar(value=s.get('vad_aggressiveness', 2))
+        self.var_vad_silence_duration = tk.DoubleVar(value=s.get('vad_silence_duration', 1.5))
+        self.var_min_recording_duration = tk.DoubleVar(value=s.get('min_recording_duration', 1.0))
         self.var_language = tk.StringVar(value=s.get('language', 'ja'))
         self.var_auto_paste = tk.BooleanVar(value=s.get('auto_paste', False))
         self.var_sound_enabled = tk.BooleanVar(value=s.get('sound_enabled', True))
@@ -218,6 +222,7 @@ class SettingsDialog:
         self.var_n_gpu_layers = tk.IntVar(value=s.get('n_gpu_layers', 0))
         self.var_sample_rate = tk.IntVar(value=s.get('sample_rate', 16000))
         self.var_silence_threshold = tk.IntVar(value=s.get('silence_threshold', 500))
+        self.var_noise_floor = tk.IntVar(value=s.get('noise_floor', 200))
 
         # 認識精度
         self.var_initial_prompt = tk.StringVar(value=s.get('initial_prompt', ''))
@@ -255,6 +260,67 @@ class SettingsDialog:
         self.notebook.add(tab, text="基本")
 
         row = 0
+
+        # 入力モード選択
+        ttk.Label(tab, text="入力モード:").grid(row=row, column=0, sticky='w', pady=5)
+
+        mode_frame = ttk.Frame(tab)
+        mode_frame.grid(row=row, column=1, sticky='w', pady=5)
+
+        ttk.Radiobutton(mode_frame, text="手動 (ホットキーで開始/停止)",
+            variable=self.var_input_mode, value="manual",
+            command=self._on_mode_change).pack(anchor='w')
+
+        ttk.Radiobutton(mode_frame, text="VAD自動 (音声検知で自動録音)",
+            variable=self.var_input_mode, value="vad_auto",
+            command=self._on_mode_change).pack(anchor='w')
+
+        row += 1
+
+        # VAD無音停止時間 (VAD自動時のみ有効)
+        self._vad_label = ttk.Label(tab, text="無音停止時間:")
+        self._vad_label.grid(row=row, column=0, sticky='w', pady=5)
+
+        vad_frame = ttk.Frame(tab)
+        vad_frame.grid(row=row, column=1, sticky='w', pady=5)
+        self._vad_frame = vad_frame
+
+        self._vad_spinbox = ttk.Spinbox(vad_frame, from_=0.5, to=5.0, increment=0.5,
+            textvariable=self.var_vad_silence_duration, width=8, format="%.1f")
+        self._vad_spinbox.pack(side='left')
+        ttk.Label(vad_frame, text="秒", foreground='gray').pack(side='left', padx=(5, 0))
+
+        row += 1
+
+        # VAD感度 (VAD自動時のみ有効)
+        self._vad_agg_label = ttk.Label(tab, text="VAD感度:")
+        self._vad_agg_label.grid(row=row, column=0, sticky='w', pady=5)
+
+        vad_agg_frame = ttk.Frame(tab)
+        vad_agg_frame.grid(row=row, column=1, sticky='w', pady=5)
+        self._vad_agg_frame = vad_agg_frame
+
+        self._vad_agg_spinbox = ttk.Spinbox(vad_agg_frame, from_=0, to=3, increment=1,
+            textvariable=self.var_vad_aggressiveness, width=8)
+        self._vad_agg_spinbox.pack(side='left')
+        ttk.Label(vad_agg_frame, text="(0-3, 3が最も厳しい)", foreground='gray').pack(side='left', padx=(5, 0))
+
+        row += 1
+
+        # 最小録音時間 (VAD自動時のみ有効)
+        self._min_rec_label = ttk.Label(tab, text="最小録音時間:")
+        self._min_rec_label.grid(row=row, column=0, sticky='w', pady=5)
+
+        min_rec_frame = ttk.Frame(tab)
+        min_rec_frame.grid(row=row, column=1, sticky='w', pady=5)
+        self._min_rec_frame = min_rec_frame
+
+        self._min_rec_spinbox = ttk.Spinbox(min_rec_frame, from_=0.0, to=5.0, increment=0.5,
+            textvariable=self.var_min_recording_duration, width=8, format="%.1f")
+        self._min_rec_spinbox.pack(side='left')
+        ttk.Label(min_rec_frame, text="秒 (これより短い録音は無視)", foreground='gray').pack(side='left', padx=(5, 0))
+
+        row += 1
 
         # モデル選択
         ttk.Label(tab, text="モデル:").grid(row=row, column=0, sticky='w', pady=5)
@@ -303,6 +369,21 @@ class SettingsDialog:
 
         tab.columnconfigure(1, weight=1)
 
+        # 初期状態を設定
+        self._on_mode_change()
+
+    def _on_mode_change(self):
+        """入力モード変更時のハンドラ"""
+        is_vad = self.var_input_mode.get() == "vad_auto"
+        state = 'normal' if is_vad else 'disabled'
+        fg = 'black' if is_vad else 'gray'
+        self._vad_label.configure(foreground=fg)
+        self._vad_spinbox.configure(state=state)
+        self._vad_agg_label.configure(foreground=fg)
+        self._vad_agg_spinbox.configure(state=state)
+        self._min_rec_label.configure(foreground=fg)
+        self._min_rec_spinbox.configure(state=state)
+
     def _build_advanced_tab(self):
         """詳細設定タブを構築"""
         tab = ttk.Frame(self.notebook, padding=15)
@@ -350,8 +431,31 @@ class SettingsDialog:
 
         row += 1
 
-        # 無音閾値
-        ttk.Label(tab, text="無音判定の閾値:").grid(row=row, column=0, sticky='w', pady=5)
+        # ノイズフロア（最小音量閾値）
+        ttk.Label(tab, text="ノイズフロア:").grid(row=row, column=0, sticky='w', pady=5)
+
+        noise_frame = ttk.Frame(tab)
+        noise_frame.grid(row=row, column=1, sticky='ew', pady=5)
+
+        self.noise_scale = ttk.Scale(
+            noise_frame,
+            from_=0,
+            to=1000,
+            variable=self.var_noise_floor,
+            orient='horizontal',
+            length=200
+        )
+        self.noise_scale.pack(side='left')
+
+        self.noise_label = ttk.Label(noise_frame, text=str(self.var_noise_floor.get()), width=6)
+        self.noise_label.pack(side='left', padx=(10, 0))
+
+        self.var_noise_floor.trace_add('write', lambda *args: self.noise_label.config(text=str(int(self.var_noise_floor.get()))))
+
+        row += 1
+
+        # 発話判定閾値
+        ttk.Label(tab, text="発話判定の閾値:").grid(row=row, column=0, sticky='w', pady=5)
 
         silence_frame = ttk.Frame(tab)
         silence_frame.grid(row=row, column=1, sticky='ew', pady=5)
@@ -377,7 +481,7 @@ class SettingsDialog:
         ttk.Separator(tab, orient='horizontal').grid(row=row, column=0, columnspan=2, sticky='ew', pady=15)
         row += 1
 
-        info_text = "無音閾値: 値が小さいほど敏感に無音を検出します。\n環境音が多い場合は値を大きくしてください。"
+        info_text = "ノイズフロア: この値以下の音は無視（環境ノイズ除去）\n発話判定閾値: この値を超えたら発話として認識"
         ttk.Label(tab, text=info_text, foreground='gray').grid(row=row, column=0, columnspan=2, sticky='w')
 
         tab.columnconfigure(1, weight=1)
@@ -553,6 +657,10 @@ class SettingsDialog:
                     new_settings['model_path'] = f"./models/{model_name}"
 
             # 基本設定
+            new_settings['input_mode'] = self.var_input_mode.get()
+            new_settings['vad_aggressiveness'] = self.var_vad_aggressiveness.get()
+            new_settings['vad_silence_duration'] = round(self.var_vad_silence_duration.get(), 1)
+            new_settings['min_recording_duration'] = round(self.var_min_recording_duration.get(), 1)
             new_settings['language'] = self.var_language.get()
             new_settings['auto_paste'] = self.var_auto_paste.get()
             new_settings['sound_enabled'] = self.var_sound_enabled.get()
@@ -561,6 +669,7 @@ class SettingsDialog:
             new_settings['n_gpu_layers'] = self.var_n_gpu_layers.get()
             new_settings['sample_rate'] = self.var_sample_rate.get()
             new_settings['silence_threshold'] = int(self.var_silence_threshold.get())
+            new_settings['noise_floor'] = int(self.var_noise_floor.get())
 
             # 認識精度
             new_settings['initial_prompt'] = self.prompt_text.get('1.0', 'end-1c')
