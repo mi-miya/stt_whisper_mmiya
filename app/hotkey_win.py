@@ -27,12 +27,12 @@ MODIFIERS = {
 }
 
 class HotkeyListener(threading.Thread):
-    def __init__(self, hotkey_str: str, on_trigger: Callable):
+    def __init__(self, hotkey_str: str, on_trigger: Callable, hotkey_id: int = 1):
         super().__init__(daemon=True)
         self.hotkey_str = hotkey_str.lower()
         self.on_trigger = on_trigger
         self.running = False
-        self.hotkey_id = 1
+        self.hotkey_id = hotkey_id
 
     def parse_hotkey(self):
         parts = self.hotkey_str.split('+')

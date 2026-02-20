@@ -28,7 +28,8 @@ class MainApp:
         self.recorder = Recorder()
         self.transcriber = Transcriber()
         self.icon = None
-        self.hotkey_thread = None
+        self.manual_hotkey_thread = None
+        self.vad_hotkey_thread = None
         self.gui = None # Tkinter widget reference
 
         # Lock for state transition
@@ -81,25 +82,39 @@ class MainApp:
         if self.gui:
             self.gui.set_state(self.state, color)
 
-    def on_hotkey(self):
+    def on_manual_hotkey(self):
+        """マニュアルモード用ホットキーコールバック"""
         # 状態を確認してアクションを決定（ロックを最小限に保持）
         with self.lock:
             current_state = self.state
             if current_state == TRANSCRIBING:
-                logger.info("Ignored hotkey during transcription")
+                logger.info("Ignored manual hotkey during transcription")
                 return
 
         # ロックの外で各アクションを実行（デッドロック回避）
         if current_state == IDLE:
-            if current_settings.input_mode == "vad_auto":
-                self.start_listening()
-            else:
-                self.start_recording()
+            self.start_recording()
         elif current_state == RECORDING:
-            if current_settings.input_mode == "manual":
-                self.stop_and_transcribe()
-            else:
-                self.cancel_recording()
+            self.stop_and_transcribe()
+        elif current_state == LISTENING:
+            # VADモード中にマニュアルホットキーが押された場合は無視
+            logger.info("Ignored manual hotkey during VAD listening")
+
+    def on_vad_hotkey(self):
+        """VADモード用ホットキーコールバック"""
+        # 状態を確認してアクションを決定（ロックを最小限に保持）
+        with self.lock:
+            current_state = self.state
+            if current_state == TRANSCRIBING:
+                logger.info("Ignored VAD hotkey during transcription")
+                return
+
+        # ロックの外で各アクションを実行（デッドロック回避）
+        if current_state == IDLE:
+            self.start_listening()
+        elif current_state == RECORDING:
+            # 録音中にVADホットキーが押された場合はキャンセル
+            self.cancel_recording()
         elif current_state == LISTENING:
             self.stop_listening()
 
@@ -376,10 +391,13 @@ class MainApp:
         logger.info("VAD listen loop exited")
 
     def run_hotkey(self):
-        logger.info(f"App starting. Hotkey: {current_settings.hotkey}")
-        # Start hotkey listener
-        self.hotkey_thread = HotkeyListener(current_settings.hotkey, self.on_hotkey)
-        self.hotkey_thread.start()
+        logger.info(f"App starting. Manual hotkey: {current_settings.manual_hotkey}, VAD hotkey: {current_settings.vad_hotkey}")
+        # Start manual hotkey listener
+        self.manual_hotkey_thread = HotkeyListener(current_settings.manual_hotkey, self.on_manual_hotkey, hotkey_id=1)
+        self.manual_hotkey_thread.start()
+        # Start VAD hotkey listener
+        self.vad_hotkey_thread = HotkeyListener(current_settings.vad_hotkey, self.on_vad_hotkey, hotkey_id=2)
+        self.vad_hotkey_thread.start()
 
     def run_tray(self):
         self.setup_tray()
@@ -418,9 +436,14 @@ class MainApp:
                 self.icon.stop()
             except:
                 pass
-        if self.hotkey_thread:
+        if self.manual_hotkey_thread:
             try:
-                self.hotkey_thread.stop()
+                self.manual_hotkey_thread.stop()
+            except:
+                pass
+        if self.vad_hotkey_thread:
+            try:
+                self.vad_hotkey_thread.stop()
             except:
                 pass
 
@@ -435,8 +458,10 @@ class MainApp:
         logger.info("Exit requested")
         if self.icon:
             self.icon.stop()
-        if self.hotkey_thread:
-            self.hotkey_thread.stop()
+        if self.manual_hotkey_thread:
+            self.manual_hotkey_thread.stop()
+        if self.vad_hotkey_thread:
+            self.vad_hotkey_thread.stop()
         sys.exit(0)
 
 import signal
@@ -479,7 +504,7 @@ if __name__ == "__main__":
 
         # Initialize GUI
         app.gui = FloatingWidget(
-            on_click_callback=app.on_hotkey,  # Re-use toggle logic
+            on_click_callback=app.on_manual_hotkey,  # GUIクリックはマニュアルモードとして扱う
             on_exit_callback=lambda: app.exit_app(None, None),
             on_settings_callback=app.show_settings_dialog
         )

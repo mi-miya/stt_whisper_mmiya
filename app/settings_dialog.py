@@ -261,65 +261,56 @@ class SettingsDialog:
 
         row = 0
 
-        # 入力モード選択
-        ttk.Label(tab, text="入力モード:").grid(row=row, column=0, sticky='w', pady=5)
+        # モード説明
+        info_frame = ttk.Frame(tab, relief='solid', borderwidth=1, padding=10)
+        info_frame.grid(row=row, column=0, columnspan=2, sticky='ew', pady=(0, 15))
 
-        mode_frame = ttk.Frame(tab)
-        mode_frame.grid(row=row, column=1, sticky='w', pady=5)
-
-        ttk.Radiobutton(mode_frame, text="手動 (ホットキーで開始/停止)",
-            variable=self.var_input_mode, value="manual",
-            command=self._on_mode_change).pack(anchor='w')
-
-        ttk.Radiobutton(mode_frame, text="VAD自動 (音声検知で自動録音)",
-            variable=self.var_input_mode, value="vad_auto",
-            command=self._on_mode_change).pack(anchor='w')
+        mode_info = "入力モードはホットキーで自動的に切り替わります:\n  • マニュアルモード用ホットキー → 手動で録音開始/停止\n  • VADモード用ホットキー → 音声検知で自動録音"
+        ttk.Label(info_frame, text=mode_info, foreground='#0066cc', justify='left').pack()
 
         row += 1
 
-        # VAD無音停止時間 (VAD自動時のみ有効)
-        self._vad_label = ttk.Label(tab, text="無音停止時間:")
-        self._vad_label.grid(row=row, column=0, sticky='w', pady=5)
+        # VAD設定セクション
+        ttk.Label(tab, text="VADモード設定:", font=('', 9, 'bold')).grid(row=row, column=0, columnspan=2, sticky='w', pady=(5, 10))
+        row += 1
+
+        # VAD無音停止時間
+        ttk.Label(tab, text="無音停止時間:").grid(row=row, column=0, sticky='w', pady=5)
 
         vad_frame = ttk.Frame(tab)
         vad_frame.grid(row=row, column=1, sticky='w', pady=5)
-        self._vad_frame = vad_frame
 
-        self._vad_spinbox = ttk.Spinbox(vad_frame, from_=0.5, to=5.0, increment=0.5,
-            textvariable=self.var_vad_silence_duration, width=8, format="%.1f")
-        self._vad_spinbox.pack(side='left')
+        ttk.Spinbox(vad_frame, from_=0.5, to=5.0, increment=0.5,
+            textvariable=self.var_vad_silence_duration, width=8, format="%.1f").pack(side='left')
         ttk.Label(vad_frame, text="秒", foreground='gray').pack(side='left', padx=(5, 0))
 
         row += 1
 
-        # VAD感度 (VAD自動時のみ有効)
-        self._vad_agg_label = ttk.Label(tab, text="VAD感度:")
-        self._vad_agg_label.grid(row=row, column=0, sticky='w', pady=5)
+        # VAD感度
+        ttk.Label(tab, text="VAD感度:").grid(row=row, column=0, sticky='w', pady=5)
 
         vad_agg_frame = ttk.Frame(tab)
         vad_agg_frame.grid(row=row, column=1, sticky='w', pady=5)
-        self._vad_agg_frame = vad_agg_frame
 
-        self._vad_agg_spinbox = ttk.Spinbox(vad_agg_frame, from_=0, to=3, increment=1,
-            textvariable=self.var_vad_aggressiveness, width=8)
-        self._vad_agg_spinbox.pack(side='left')
+        ttk.Spinbox(vad_agg_frame, from_=0, to=3, increment=1,
+            textvariable=self.var_vad_aggressiveness, width=8).pack(side='left')
         ttk.Label(vad_agg_frame, text="(0-3, 3が最も厳しい)", foreground='gray').pack(side='left', padx=(5, 0))
 
         row += 1
 
-        # 最小録音時間 (VAD自動時のみ有効)
-        self._min_rec_label = ttk.Label(tab, text="最小録音時間:")
-        self._min_rec_label.grid(row=row, column=0, sticky='w', pady=5)
+        # 最小録音時間
+        ttk.Label(tab, text="最小録音時間:").grid(row=row, column=0, sticky='w', pady=5)
 
         min_rec_frame = ttk.Frame(tab)
         min_rec_frame.grid(row=row, column=1, sticky='w', pady=5)
-        self._min_rec_frame = min_rec_frame
 
-        self._min_rec_spinbox = ttk.Spinbox(min_rec_frame, from_=0.0, to=5.0, increment=0.5,
-            textvariable=self.var_min_recording_duration, width=8, format="%.1f")
-        self._min_rec_spinbox.pack(side='left')
+        ttk.Spinbox(min_rec_frame, from_=0.0, to=5.0, increment=0.5,
+            textvariable=self.var_min_recording_duration, width=8, format="%.1f").pack(side='left')
         ttk.Label(min_rec_frame, text="秒 (これより短い録音は無視)", foreground='gray').pack(side='left', padx=(5, 0))
 
+        row += 1
+
+        ttk.Separator(tab, orient='horizontal').grid(row=row, column=0, columnspan=2, sticky='ew', pady=15)
         row += 1
 
         # モデル選択
@@ -368,21 +359,6 @@ class SettingsDialog:
         ttk.Label(tab, text=info_text, foreground='gray').grid(row=row, column=0, columnspan=2, sticky='w')
 
         tab.columnconfigure(1, weight=1)
-
-        # 初期状態を設定
-        self._on_mode_change()
-
-    def _on_mode_change(self):
-        """入力モード変更時のハンドラ"""
-        is_vad = self.var_input_mode.get() == "vad_auto"
-        state = 'normal' if is_vad else 'disabled'
-        fg = 'black' if is_vad else 'gray'
-        self._vad_label.configure(foreground=fg)
-        self._vad_spinbox.configure(state=state)
-        self._vad_agg_label.configure(foreground=fg)
-        self._vad_agg_spinbox.configure(state=state)
-        self._min_rec_label.configure(foreground=fg)
-        self._min_rec_spinbox.configure(state=state)
 
     def _build_advanced_tab(self):
         """詳細設定タブを構築"""
@@ -550,12 +526,29 @@ class SettingsDialog:
 
         row = 0
 
-        ttk.Label(tab, text="録音開始/停止のホットキー:").grid(row=row, column=0, sticky='w', pady=10)
+        # マニュアルモード用ホットキー
+        ttk.Label(tab, text="マニュアルモード用ホットキー:", font=('', 9, 'bold')).grid(row=row, column=0, sticky='w', pady=(5, 2))
+        row += 1
+        ttk.Label(tab, text="(押すと録音開始、もう一度押すと停止)", foreground='gray').grid(row=row, column=0, sticky='w', pady=(0, 5))
         row += 1
 
-        # ホットキーキャプチャウィジェット
-        self.hotkey_capture = HotkeyCapture(tab, self.settings.get('hotkey', ''))
-        self.hotkey_capture.grid(row=row, column=0, sticky='ew', pady=5)
+        # マニュアルモード用ホットキーキャプチャウィジェット
+        self.manual_hotkey_capture = HotkeyCapture(tab, self.settings.get('manual_hotkey', '<ctrl>+<alt>+<shift>+j'))
+        self.manual_hotkey_capture.grid(row=row, column=0, sticky='ew', pady=5)
+        row += 1
+
+        ttk.Separator(tab, orient='horizontal').grid(row=row, column=0, sticky='ew', pady=15)
+        row += 1
+
+        # VADモード用ホットキー
+        ttk.Label(tab, text="VADモード用ホットキー:", font=('', 9, 'bold')).grid(row=row, column=0, sticky='w', pady=(5, 2))
+        row += 1
+        ttk.Label(tab, text="(押すと音声検知開始、もう一度押すと停止)", foreground='gray').grid(row=row, column=0, sticky='w', pady=(0, 5))
+        row += 1
+
+        # VADモード用ホットキーキャプチャウィジェット
+        self.vad_hotkey_capture = HotkeyCapture(tab, self.settings.get('vad_hotkey', '<ctrl>+<alt>+<shift>+k'))
+        self.vad_hotkey_capture.grid(row=row, column=0, sticky='ew', pady=5)
         row += 1
 
         # 説明
@@ -679,9 +672,13 @@ class SettingsDialog:
             new_settings['carry_initial_prompt'] = self.var_carry_initial_prompt.get()
 
             # ホットキー
-            hotkey = self.hotkey_capture.get()
-            if hotkey:
-                new_settings['hotkey'] = hotkey
+            manual_hotkey = self.manual_hotkey_capture.get()
+            if manual_hotkey:
+                new_settings['manual_hotkey'] = manual_hotkey
+
+            vad_hotkey = self.vad_hotkey_capture.get()
+            if vad_hotkey:
+                new_settings['vad_hotkey'] = vad_hotkey
 
             # コールバックを呼び出し
             self.on_save(new_settings)
