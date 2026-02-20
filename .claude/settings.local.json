@@ -1,7 +1,14 @@
 {
   "permissions": {
     "allow": [
-      "Bash(dir:*)"
+      "Bash(dir:*)",
+      "Bash(git add:*)",
+      "Bash(test:*)",
+      "Bash(pip install:*)",
+      "Bash(python -c:*)"
+    ],
+    "ask": [
+      "Bash(git commit:*)"
     ]
   }
 }
