@@ -2,6 +2,7 @@
 # sounddevice, numpy, scipy は録音開始時に初めてインポートされる
 import tempfile
 import time
+import threading
 from collections import deque
 from pathlib import Path
 from .settings import current_settings
@@ -55,6 +56,16 @@ class Recorder:
         # フレーム数を動的に計算（0.5秒 / 20ms = 25フレーム）
         prebuffer_frames = int(self._prebuffer_duration * 1000 / self._vad_frame_duration)
         self._prebuffer = deque(maxlen=prebuffer_frames)
+
+        # === 常時録音モード用（VADモード改善） ===
+        self._continuous_stream = None      # 常時録音ストリーム
+        self._ring_buffer = None            # リングバッファ (numpy array)
+        self._ring_buffer_size = 0          # バッファサイズ (サンプル数)
+        self._ring_buffer_duration = 65     # バッファ長（秒）- 最大録音時間 + マージン
+        self._write_pos = 0                 # 書き込み位置
+        self._buffer_lock = threading.Lock() # バッファアクセス用ロック
+        self._speech_start_pos = -1         # 発話開始位置
+        self._is_capturing = False          # 発話キャプチャ中フラグ
 
         # Ensure temp directory exists
         try:
@@ -295,3 +306,201 @@ class Recorder:
     def is_speech_detected(self) -> bool:
         """Get the current VAD result (True if speech detected)."""
         return self._last_vad_result
+
+    # ========================================
+    # 常時録音モード（VADモード改善版）
+    # ========================================
+
+    def start_continuous(self):
+        """VADモード用常時録音ストリームを開始。
+
+        単一のストリームで常時録音し、音声区間をリングバッファから切り出す方式。
+        ストリームの切り替えによる音声の途切れを防ぐ。
+        """
+        if self._continuous_stream is not None:
+            logger.warning("Continuous stream already running")
+            return
+
+        sd, np, _, webrtcvad = _lazy_import()
+
+        # WebRTC VADを初期化
+        self._vad = webrtcvad.Vad(current_settings.vad_aggressiveness)
+        logger.info(f"WebRTC VAD initialized for continuous mode (aggressiveness={current_settings.vad_aggressiveness})")
+
+        # リングバッファを初期化
+        buffer_samples = int(self.sample_rate * self._ring_buffer_duration)
+        self._ring_buffer = np.zeros(buffer_samples, dtype=np.int16)
+        self._ring_buffer_size = buffer_samples
+        self._write_pos = 0
+
+        # 状態リセット
+        self._speech_start_pos = -1
+        self._is_capturing = False
+        self._last_vad_result = False
+        self._last_amplitude = 0.0
+        self._vad_error_count = 0
+
+        def _continuous_callback(indata, frames, time_info, status):
+            if status:
+                logger.warning(f"Continuous stream status: {status}")
+
+            # VAD判定
+            audio_bytes = indata[:, 0].tobytes() if indata.ndim > 1 else indata.tobytes()
+            try:
+                self._last_vad_result = self._vad.is_speech(audio_bytes, self.sample_rate)
+                self._vad_error_count = 0
+            except Exception as e:
+                self._vad_error_count += 1
+                if self._vad_error_count <= 3:  # 最初の数回だけログ出力
+                    logger.error(f"VAD判定エラー（常時録音中）: {e}")
+                self._last_vad_result = False
+
+                # エラーが連続する場合はVADを再初期化
+                if self._vad_error_count >= self._max_vad_errors:
+                    try:
+                        self._vad = webrtcvad.Vad(current_settings.vad_aggressiveness)
+                        self._vad_error_count = 0
+                    except:
+                        pass
+
+            # 振幅更新（デバッグ用）
+            self._last_amplitude = float(np.max(np.abs(indata.astype(np.float32))))
+
+            # リングバッファに書き込み
+            with self._buffer_lock:
+                data = indata[:, 0] if indata.ndim > 1 else indata.flatten()
+                n = len(data)
+
+                if self._write_pos + n <= self._ring_buffer_size:
+                    # バッファの終端を超えない場合
+                    self._ring_buffer[self._write_pos:self._write_pos + n] = data
+                else:
+                    # バッファの終端を超える場合は2回に分けて書き込み
+                    first_part = self._ring_buffer_size - self._write_pos
+                    self._ring_buffer[self._write_pos:] = data[:first_part]
+                    self._ring_buffer[:n - first_part] = data[first_part:]
+
+                self._write_pos = (self._write_pos + n) % self._ring_buffer_size
+
+        try:
+            self._continuous_stream = sd.InputStream(
+                samplerate=self.sample_rate,
+                channels=self.channels,
+                callback=_continuous_callback,
+                dtype='int16',
+                blocksize=self._vad_frame_size,
+                device=current_settings.audio_device
+            )
+            self._continuous_stream.start()
+            logger.info(f"Continuous recording stream started (buffer={self._ring_buffer_duration}s, blocksize={self._vad_frame_size})")
+        except Exception as e:
+            logger.error(f"Failed to start continuous stream: {e}")
+            self._continuous_stream = None
+            self._ring_buffer = None
+
+    def stop_continuous(self):
+        """常時録音ストリームを停止。"""
+        if self._continuous_stream is not None:
+            try:
+                self._continuous_stream.stop()
+                self._continuous_stream.close()
+            except Exception as e:
+                logger.error(f"Error stopping continuous stream: {e}")
+            finally:
+                self._continuous_stream = None
+                self._ring_buffer = None
+                self._speech_start_pos = -1
+                self._is_capturing = False
+                self._last_amplitude = 0.0
+                self._last_vad_result = False
+                logger.info("Continuous recording stream stopped")
+
+    def mark_speech_start(self):
+        """発話開始位置をマーク（プリバッファ分前から）。
+
+        VADで音声検知された時に呼び出す。
+        プリバッファ分（0.5秒）前の位置を記録し、発話の冒頭が切れないようにする。
+        """
+        with self._buffer_lock:
+            # プリバッファ分（0.5秒）前の位置を計算
+            prebuffer_samples = int(self.sample_rate * self._prebuffer_duration)
+            self._speech_start_pos = (self._write_pos - prebuffer_samples) % self._ring_buffer_size
+            self._is_capturing = True
+        logger.debug(f"Speech start marked at position {self._speech_start_pos} (prebuffer: {self._prebuffer_duration}s)")
+
+    def mark_speech_end(self) -> str:
+        """発話終了、バッファから切り出してWAVファイルとして保存。
+
+        VADで無音検知された時に呼び出す。
+        リングバッファから音声区間を切り出し、WAVファイルとして保存する。
+
+        Returns:
+            保存したWAVファイルのパス、または空文字列（無音/エラー時）
+        """
+        if not self._is_capturing or self._speech_start_pos < 0:
+            logger.warning("mark_speech_end called but not capturing")
+            return ""
+
+        sd, np, wav, _ = _lazy_import()
+
+        with self._buffer_lock:
+            speech_end_pos = self._write_pos
+            start_pos = self._speech_start_pos
+
+            # 区間の長さを計算
+            if speech_end_pos >= start_pos:
+                length = speech_end_pos - start_pos
+            else:
+                # ラップアラウンドの場合
+                length = (self._ring_buffer_size - start_pos) + speech_end_pos
+
+            # バッファサイズを超える場合は最新のデータのみ使用
+            if length > self._ring_buffer_size:
+                logger.warning(f"Speech segment too long ({length} samples), truncating")
+                length = self._ring_buffer_size
+                start_pos = (speech_end_pos - length) % self._ring_buffer_size
+
+            # データを切り出し
+            audio_data = np.zeros(length, dtype=np.int16)
+            if speech_end_pos >= start_pos:
+                audio_data = self._ring_buffer[start_pos:speech_end_pos].copy()
+            else:
+                # ラップアラウンドの場合
+                first_part = self._ring_buffer_size - start_pos
+                audio_data[:first_part] = self._ring_buffer[start_pos:]
+                audio_data[first_part:] = self._ring_buffer[:speech_end_pos]
+
+            # 状態リセット
+            self._speech_start_pos = -1
+            self._is_capturing = False
+
+        # 無音チェック（既存ロジックを再利用）
+        float_data = audio_data.astype(np.float32)
+        rms = np.sqrt(np.mean(float_data**2))
+        max_amp = np.max(np.abs(float_data))
+
+        logger.info(f"Speech segment stats: duration={length/self.sample_rate:.2f}s, RMS={rms:.2f}, Max={max_amp:.2f}")
+
+        if max_amp < current_settings.silence_threshold:
+            logger.info(f"Audio ignored: Max amplitude too low ({max_amp:.2f})")
+            return ""
+
+        MIN_RMS_THRESHOLD = 400
+        if rms < MIN_RMS_THRESHOLD:
+            logger.info(f"Audio ignored: RMS too low ({rms:.2f})")
+            return ""
+
+        # WAVファイル保存
+        timestamp = int(time.time() * 1000)
+        filename = self.temp_dir / f"rec_{timestamp}.wav"
+        wav.write(str(filename), self.sample_rate, audio_data)
+        logger.info(f"Saved speech segment to {filename}")
+
+        return str(filename)
+
+    def reset_capture_state(self):
+        """キャプチャ状態のみリセット（録音時間が短い場合などに使用）。"""
+        with self._buffer_lock:
+            self._speech_start_pos = -1
+            self._is_capturing = False
+        logger.debug("Capture state reset")

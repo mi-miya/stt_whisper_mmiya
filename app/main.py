@@ -150,7 +150,7 @@ class MainApp:
             time.sleep(0.05) # Poll every 50ms
 
     def cancel_recording(self):
-        should_resume_vad = False
+        is_vad_mode = False
         with self.lock:
             if self.state != RECORDING:
                 return
@@ -159,17 +159,19 @@ class MainApp:
 
             # VADモードの場合はLISTENINGに戻る（_vad_stop_eventがアクティブな場合）
             if self._vad_stop_event and not self._vad_stop_event.is_set():
-                should_resume_vad = True
+                is_vad_mode = True
                 self.state = LISTENING
             else:
                 self.state = IDLE
 
             self.update_icon_state()
 
-        # ストリーム操作はロックの外で実行
-        self.recorder.stop(discard=True)
-        if should_resume_vad:
-            self.recorder.start_monitoring()
+        # VADモード（常時録音）の場合はキャプチャ状態のみリセット
+        # マニュアルモードの場合はストリームを停止
+        if is_vad_mode:
+            self.recorder.reset_capture_state()
+        else:
+            self.recorder.stop(discard=True)
         sounds.play_cancel()
 
 
@@ -239,8 +241,8 @@ class MainApp:
         logger.info("FIFO transcription worker stopped")
 
     def start_listening(self):
-        """Start VAD auto mode listening."""
-        logger.info("VAD Auto: Start Listening")
+        """Start VAD auto mode listening (常時録音方式)."""
+        logger.info("VAD Auto: Start Listening (Continuous Mode)")
 
         # 前のセッションのクリーンアップ
         self._cleanup_previous_vad_session()
@@ -251,7 +253,8 @@ class MainApp:
             self.state = LISTENING
             self.update_icon_state()
 
-        self.recorder.start_monitoring()
+        # 常時録音を開始（ストリームの切り替えなし）
+        self.recorder.start_continuous()
         self._vad_stop_event = threading.Event()
 
         # 新しいキューを作成（前のセッションの残骸を確実に除去）
@@ -265,16 +268,18 @@ class MainApp:
         )
         self._transcribe_worker_thread.start()
 
-        threading.Thread(target=self._vad_listen_loop,
+        threading.Thread(target=self._vad_listen_loop_continuous,
                          args=(self._vad_stop_event,), daemon=True).start()
         threading.Thread(target=self._monitor_cancellation, daemon=True).start()
 
     def stop_listening(self):
-        """Stop VAD auto mode listening."""
-        logger.info("VAD Auto: Stop Listening")
+        """Stop VAD auto mode listening (常時録音方式)."""
+        logger.info("VAD Auto: Stop Listening (Continuous Mode)")
         if self._vad_stop_event:
             self._vad_stop_event.set()
-        self.recorder.stop_monitoring()
+
+        # 常時録音を停止
+        self.recorder.stop_continuous()
 
         # キューをクリア（残っているアイテムの一時ファイルを削除）
         self._clear_transcribe_queue()
@@ -289,7 +294,7 @@ class MainApp:
                 logger.warning("Transcribe worker thread did not stop in time")
 
         with self.lock:
-            if self.state == LISTENING:
+            if self.state in (LISTENING, RECORDING):
                 self.state = IDLE
                 self.update_icon_state()
 
@@ -326,123 +331,102 @@ class MainApp:
         if cleared_count > 0:
             logger.info(f"Cleared {cleared_count} items from transcribe queue")
 
-    def _vad_listen_loop(self, stop_event):
-        """VAD auto mode main loop with FIFO transcription using WebRTC VAD."""
+    def _vad_listen_loop_continuous(self, stop_event):
+        """VAD auto mode main loop (常時録音方式).
+
+        単一のストリームで常時録音し、音声区間をリングバッファから切り出す。
+        ストリームの切り替えによる音声の途切れを防ぐ。
+        """
         poll_interval = 0.05  # 50ms
         silence_needed = int(current_settings.vad_silence_duration / poll_interval)
         min_duration = current_settings.min_recording_duration
-        PRE_SPEECH_COUNT = 10  # 約500ms連続して音声があれば録音開始（キーボード音などの誤検知を防止）
-        MIN_SPEECH_AMPLITUDE = 2000  # 発話開始時の最低振幅（キーボード音などのノイズを除外）
-        MAX_SILENCE_DURATION = 3.0  # 録音中の最大無音期間（秒）：これを超えたら強制停止
-        speech_count = 0
+        PRE_SPEECH_COUNT = 10  # 約500ms連続して音声があれば録音開始
+        MIN_SPEECH_AMPLITUDE = 2000  # 発話開始時の最低振幅
+        MAX_SILENCE_DURATION = 3.0  # 録音中の最大無音期間（秒）
 
-        logger.info(f"VAD: Using WebRTC VAD (aggressiveness={current_settings.vad_aggressiveness}, pre-speech={PRE_SPEECH_COUNT * poll_interval:.2f}s, min-amp={MIN_SPEECH_AMPLITUDE})")
+        speech_count = 0
+        is_capturing = False  # 発話キャプチャ中かどうか
+        recording_start_time = 0
+
+        logger.info(f"VAD Continuous: Using WebRTC VAD (aggressiveness={current_settings.vad_aggressiveness})")
 
         while not stop_event.is_set():
-            # フェーズ1: 音声検知待ち
-            if self.state != LISTENING:
+            # 状態チェック（キャンセルされた場合など）
+            current_state = self.state
+            if current_state not in (LISTENING, RECORDING):
                 break
 
-            # WebRTC VADで音声判定
             is_speech = self.recorder.is_speech_detected()
+            current_amp = self.recorder.get_current_amplitude()
 
-            if is_speech:
-                speech_count += 1
-                if speech_count < PRE_SPEECH_COUNT:
-                    time.sleep(poll_interval)
-                    continue
+            if not is_capturing:
+                # フェーズ1: 音声検知待ち (LISTENING状態)
+                if is_speech:
+                    speech_count += 1
+                    if speech_count >= PRE_SPEECH_COUNT:
+                        if current_amp >= MIN_SPEECH_AMPLITUDE:
+                            # 発話開始をマーク
+                            logger.info(f"VAD: Speech detected (amp={current_amp:.0f}), marking start")
+                            recording_start_time = time.time()
+                            self.recorder.mark_speech_start()
+                            is_capturing = True
+                            speech_count = 0
 
-                # 振幅チェック：音声検知はされたが振幅が低い場合はキーボード音などの可能性
-                current_amp = self.recorder.get_current_amplitude()
-                if current_amp < MIN_SPEECH_AMPLITUDE:
-                    logger.info(f"VAD: Speech detected but amplitude too low ({current_amp:.0f} < {MIN_SPEECH_AMPLITUDE}), ignoring")
-                    speech_count = 0
-                    time.sleep(poll_interval)
-                    continue
-
-                # 音声検知: 録音開始
-                logger.info(f"VAD: Speech detected (amp={current_amp:.0f}), starting recording")
-                recording_start_time = time.time()
-                with self.lock:
-                    if self.state == LISTENING:
-                        # VADモードからの呼び出しなので、キャンセルモニターは既に起動済み
-                        self.start_recording(from_vad=True)
-                    else:
-                        break
-                speech_count = 0
-
-                # フェーズ2: 無音検知待ち
-                silence_count = 0
-                loop_count = 0
-                max_silence_count = int(MAX_SILENCE_DURATION / poll_interval)
-                while not stop_event.is_set():
-                    # 状態が変わった場合（キャンセルなど）はループを抜ける
-                    if self.state != RECORDING:
-                        logger.info("VAD: State changed during recording, exiting silence detection")
-                        break
-
-                    # WebRTC VADで音声判定
-                    is_speech = self.recorder.is_speech_detected()
-                    current_amp = self.recorder.get_current_amplitude()
-
-                    # デバッグログ（10回に1回）
-                    loop_count += 1
-                    if loop_count % 10 == 0:
-                        logger.debug(f"VAD無音検知: is_speech={is_speech}, amp={current_amp:.0f}, silence_count={silence_count}/{silence_needed}")
-
-                    # 無音判定: VADが音声なしと判定 OR 振幅が極めて低い場合
-                    SILENCE_AMP_THRESHOLD = 300  # この振幅以下は無音とみなす
-                    is_silence = (not is_speech) or (current_amp < SILENCE_AMP_THRESHOLD)
-
-                    if is_silence:
-                        silence_count += 1
-                    else:
-                        silence_count = 0
-
-                    # 設定された無音期間で停止、または最大無音期間（安全装置）で停止
-                    if silence_count >= silence_needed or silence_count >= max_silence_count:
-                        # 無音検知: 録音停止 & すぐLISTENINGに戻る
-                        recording_duration = time.time() - recording_start_time
-                        logger.info(f"VAD: Silence detected, stopping recording (duration: {recording_duration:.2f}s)")
-                        audio_file = self.recorder.stop()
-
-                        should_start_monitoring = False
-                        with self.lock:
-                            # VADモードがまだアクティブな場合のみLISTENINGに戻る
-                            if not stop_event.is_set() and self.state == RECORDING:
-                                self.state = LISTENING
-                                self.update_icon_state()
-                                should_start_monitoring = True
-
-                        # モニタリング再開（フラグで制御して競合を回避）
-                        if should_start_monitoring and not stop_event.is_set():
-                            self.recorder.start_monitoring()
-
-                        # 録音時間が短すぎる場合はスキップ（咳、息継ぎなど）
-                        if audio_file:
-                            if recording_duration < min_duration:
-                                logger.info(f"VAD: Recording too short ({recording_duration:.2f}s < {min_duration}s), skipping")
-                                self.recorder.cleanup_file(audio_file)
-                            else:
-                                logger.info(f"VAD: Recording accepted ({recording_duration:.2f}s >= {min_duration}s), queuing transcription: {audio_file}")
-                                self._transcribe_queue.put(audio_file)
+                            # UIを更新（RECORDING状態）
+                            with self.lock:
+                                if self.state == LISTENING:
+                                    self.state = RECORDING
+                                    self.update_icon_state()
                         else:
-                            logger.info(f"VAD: Recording rejected by silence check (duration: {recording_duration:.2f}s)")
-
-                        break  # 内側ループを抜けて外側ループへ（次の発話待機）
-                    time.sleep(poll_interval)
-                continue
+                            logger.debug(f"VAD: Speech but amplitude too low ({current_amp:.0f})")
+                            speech_count = 0
+                else:
+                    speech_count = 0
             else:
-                speech_count = 0
+                # フェーズ2: 無音検知待ち (RECORDING状態、キャプチャ中)
+                SILENCE_AMP_THRESHOLD = 300
+                is_silence = (not is_speech) or (current_amp < SILENCE_AMP_THRESHOLD)
+
+                if is_silence:
+                    speech_count += 1  # ここでは silence_count として使用
+                else:
+                    speech_count = 0
+
+                max_silence_count = int(MAX_SILENCE_DURATION / poll_interval)
+                if speech_count >= silence_needed or speech_count >= max_silence_count:
+                    # 無音検知: 発話終了
+                    recording_duration = time.time() - recording_start_time
+                    logger.info(f"VAD: Silence detected (duration: {recording_duration:.2f}s)")
+
+                    # 録音時間チェック
+                    if recording_duration >= min_duration:
+                        audio_file = self.recorder.mark_speech_end()
+                        if audio_file:
+                            logger.info(f"VAD: Queuing transcription: {audio_file}")
+                            self._transcribe_queue.put(audio_file)
+                        else:
+                            logger.info("VAD: Audio rejected by silence check")
+                    else:
+                        logger.info(f"VAD: Too short ({recording_duration:.2f}s), discarding")
+                        self.recorder.reset_capture_state()
+
+                    is_capturing = False
+                    speech_count = 0
+
+                    # UIを更新（LISTENINGに戻る）
+                    with self.lock:
+                        if not stop_event.is_set() and self.state == RECORDING:
+                            self.state = LISTENING
+                            self.update_icon_state()
 
             time.sleep(poll_interval)
 
-        # ループ終了: IDLEに戻す
+        # ループ終了
         with self.lock:
-            if self.state == LISTENING:
+            if self.state in (LISTENING, RECORDING):
                 self.state = IDLE
                 self.update_icon_state()
-        logger.info("VAD listen loop exited")
+        logger.info("VAD continuous listen loop exited")
 
     def run_hotkey(self):
         logger.info(f"App starting. Manual hotkey: {current_settings.manual_hotkey}, VAD hotkey: {current_settings.vad_hotkey}")
