@@ -42,6 +42,22 @@ class MainApp:
         self._transcribe_queue = queue.Queue()
         self._transcribe_worker_thread = None
 
+        # バックグラウンドでWhisperモデルをウォームアップ
+        self._start_warmup()
+
+    def _start_warmup(self):
+        """バックグラウンドでWhisperモデルをウォームアップ開始"""
+        def warmup_task():
+            logger.info("Starting background warmup...")
+            success = self.transcriber.warmup()
+            if success:
+                logger.info("Background warmup completed successfully")
+            else:
+                logger.warning("Background warmup failed or skipped")
+
+        warmup_thread = threading.Thread(target=warmup_task, daemon=True)
+        warmup_thread.start()
+
     def create_image(self, color):
         # Generate generic icon
         width = 64
