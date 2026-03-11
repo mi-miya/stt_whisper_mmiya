@@ -6,4 +6,3 @@ Pillow
 pynput
 pyperclip
 pydantic
-webrtcvad-wheels

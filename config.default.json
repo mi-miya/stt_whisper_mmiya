@@ -1,5 +1,5 @@
 {
-  "hotkey": "<ctrl>+<alt>+<shift>+<j>",
+  "hotkey": "<ctrl>+<alt>+<shift>+j",
   "language": "ja",
   "model_path": "./models/ggml-medium.bin",
   "whisper_cli_path": "./bin/whisper-cli.exe",
@@ -16,9 +16,5 @@
   "temperature": 0.0,
   "carry_initial_prompt": true,
   "silence_threshold": 500,
-  "noise_floor": 200,
-  "input_mode": "manual",
-  "vad_aggressiveness": 2,
-  "vad_silence_duration": 1.2,
-  "min_recording_duration": 0.8
+  "noise_floor": 200
 }

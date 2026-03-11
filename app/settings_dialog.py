@@ -177,8 +177,8 @@ class SettingsDialog:
         # ダイアログウィンドウ作成
         self.window = tk.Toplevel(parent)
         self.window.title("設定")
-        self.window.geometry("600x650")  # サイズを拡大してボタンが見えるように
-        self.window.resizable(True, True)  # リサイズ可能に変更
+        self.window.geometry("550x550")
+        self.window.resizable(True, True)
 
         # モーダルダイアログとして設定
         self.window.transient(parent)
@@ -210,14 +210,10 @@ class SettingsDialog:
         s = self.settings
 
         # 基本設定
-        self.var_input_mode = tk.StringVar(value=s.get('input_mode', 'manual'))
-        self.var_vad_aggressiveness = tk.IntVar(value=s.get('vad_aggressiveness', 2))
-        self.var_vad_silence_duration = tk.DoubleVar(value=s.get('vad_silence_duration', 1.5))
-        self.var_min_recording_duration = tk.DoubleVar(value=s.get('min_recording_duration', 1.0))
         self.var_language = tk.StringVar(value=s.get('language', 'ja'))
         self.var_auto_paste = tk.BooleanVar(value=s.get('auto_paste', False))
 
-        # sound_enabledの初期化（デバッグログ付き）
+        # sound_enabledの初期化
         sound_enabled_value = s.get('sound_enabled', True)
         logger.info(f"Initializing sound_enabled with value: {sound_enabled_value}")
         self.var_sound_enabled = tk.BooleanVar(value=sound_enabled_value)
@@ -265,58 +261,6 @@ class SettingsDialog:
 
         row = 0
 
-        # モード説明
-        info_frame = ttk.Frame(tab, relief='solid', borderwidth=1, padding=10)
-        info_frame.grid(row=row, column=0, columnspan=2, sticky='ew', pady=(0, 15))
-
-        mode_info = "入力モードはホットキーで自動的に切り替わります:\n  • マニュアルモード用ホットキー → 手動で録音開始/停止\n  • VADモード用ホットキー → 音声検知で自動録音"
-        ttk.Label(info_frame, text=mode_info, foreground='#0066cc', justify='left').pack()
-
-        row += 1
-
-        # VAD設定セクション
-        ttk.Label(tab, text="VADモード設定:", font=('', 9, 'bold')).grid(row=row, column=0, columnspan=2, sticky='w', pady=(5, 10))
-        row += 1
-
-        # VAD無音停止時間
-        ttk.Label(tab, text="無音停止時間:").grid(row=row, column=0, sticky='w', pady=5)
-
-        vad_frame = ttk.Frame(tab)
-        vad_frame.grid(row=row, column=1, sticky='w', pady=5)
-
-        ttk.Spinbox(vad_frame, from_=0.5, to=5.0, increment=0.5,
-            textvariable=self.var_vad_silence_duration, width=8, format="%.1f").pack(side='left')
-        ttk.Label(vad_frame, text="秒", foreground='gray').pack(side='left', padx=(5, 0))
-
-        row += 1
-
-        # VAD感度
-        ttk.Label(tab, text="VAD感度:").grid(row=row, column=0, sticky='w', pady=5)
-
-        vad_agg_frame = ttk.Frame(tab)
-        vad_agg_frame.grid(row=row, column=1, sticky='w', pady=5)
-
-        ttk.Spinbox(vad_agg_frame, from_=0, to=3, increment=1,
-            textvariable=self.var_vad_aggressiveness, width=8).pack(side='left')
-        ttk.Label(vad_agg_frame, text="(0-3, 3が最も厳しい)", foreground='gray').pack(side='left', padx=(5, 0))
-
-        row += 1
-
-        # 最小録音時間
-        ttk.Label(tab, text="最小録音時間:").grid(row=row, column=0, sticky='w', pady=5)
-
-        min_rec_frame = ttk.Frame(tab)
-        min_rec_frame.grid(row=row, column=1, sticky='w', pady=5)
-
-        ttk.Spinbox(min_rec_frame, from_=0.0, to=5.0, increment=0.5,
-            textvariable=self.var_min_recording_duration, width=8, format="%.1f").pack(side='left')
-        ttk.Label(min_rec_frame, text="秒 (これより短い録音は無視)", foreground='gray').pack(side='left', padx=(5, 0))
-
-        row += 1
-
-        ttk.Separator(tab, orient='horizontal').grid(row=row, column=0, columnspan=2, sticky='ew', pady=15)
-        row += 1
-
         # モデル選択
         ttk.Label(tab, text="モデル:").grid(row=row, column=0, sticky='w', pady=5)
 
@@ -336,12 +280,12 @@ class SettingsDialog:
 
         self.lang_combo = ttk.Combobox(tab, state='readonly', width=20)
         self.lang_combo['values'] = [f"{name} ({code})" for name, code in self.LANGUAGES]
-        # 現在の値を表示用に変換（"ja" と "日本語 (ja)" の両方に対応）
+        # 現在の値を表示用に変換
         current_lang = self.var_language.get()
         for name, code in self.LANGUAGES:
             if code == current_lang or f"{name} ({code})" == current_lang:
                 self.lang_combo.set(f"{name} ({code})")
-                self.var_language.set(code)  # 内部値はコードのみに正規化
+                self.var_language.set(code)
                 break
         self.lang_combo.bind('<<ComboboxSelected>>', lambda e: self._on_language_select())
         self.lang_combo.grid(row=row, column=1, sticky='w', pady=5)
@@ -352,23 +296,13 @@ class SettingsDialog:
         ttk.Checkbutton(tab, text="自動貼り付け (Ctrl+V を自動実行)", variable=self.var_auto_paste).grid(row=row, column=0, columnspan=2, sticky='w', pady=5)
         row += 1
 
-        # ビープ音のチェックボックス（デバッグログ付き）
-        def on_sound_toggle():
-            new_value = self.var_sound_enabled.get()
-            logger.info(f"Sound enabled toggled: {new_value}")
-            # チェックボックスの状態を確認
-            logger.info(f"Checkbox widget state: {self.sound_checkbox.state()}")
-
+        # ビープ音のチェックボックス
         self.sound_checkbox = ttk.Checkbutton(
             tab,
             text="効果音を鳴らす",
-            variable=self.var_sound_enabled,
-            command=on_sound_toggle
+            variable=self.var_sound_enabled
         )
         self.sound_checkbox.grid(row=row, column=0, columnspan=2, sticky='w', pady=5)
-
-        # 初期状態をログに記録
-        logger.info(f"Sound checkbox created. Initial value: {self.var_sound_enabled.get()}, Widget state: {self.sound_checkbox.state()}")
         row += 1
 
         # 説明
@@ -546,29 +480,15 @@ class SettingsDialog:
 
         row = 0
 
-        # マニュアルモード用ホットキー
-        ttk.Label(tab, text="マニュアルモード用ホットキー:", font=('', 9, 'bold')).grid(row=row, column=0, sticky='w', pady=(5, 2))
+        # ホットキー
+        ttk.Label(tab, text="録音ホットキー:", font=('', 9, 'bold')).grid(row=row, column=0, sticky='w', pady=(5, 2))
         row += 1
         ttk.Label(tab, text="(押すと録音開始、もう一度押すと停止)", foreground='gray').grid(row=row, column=0, sticky='w', pady=(0, 5))
         row += 1
 
-        # マニュアルモード用ホットキーキャプチャウィジェット
-        self.manual_hotkey_capture = HotkeyCapture(tab, self.settings.get('manual_hotkey', '<ctrl>+<alt>+<shift>+j'))
-        self.manual_hotkey_capture.grid(row=row, column=0, sticky='ew', pady=5)
-        row += 1
-
-        ttk.Separator(tab, orient='horizontal').grid(row=row, column=0, sticky='ew', pady=15)
-        row += 1
-
-        # VADモード用ホットキー
-        ttk.Label(tab, text="VADモード用ホットキー:", font=('', 9, 'bold')).grid(row=row, column=0, sticky='w', pady=(5, 2))
-        row += 1
-        ttk.Label(tab, text="(押すと音声検知開始、もう一度押すと停止)", foreground='gray').grid(row=row, column=0, sticky='w', pady=(0, 5))
-        row += 1
-
-        # VADモード用ホットキーキャプチャウィジェット
-        self.vad_hotkey_capture = HotkeyCapture(tab, self.settings.get('vad_hotkey', '<ctrl>+<alt>+<shift>+k'))
-        self.vad_hotkey_capture.grid(row=row, column=0, sticky='ew', pady=5)
+        # ホットキーキャプチャウィジェット
+        self.hotkey_capture = HotkeyCapture(tab, self.settings.get('hotkey', '<ctrl>+<alt>+<shift>+j'))
+        self.hotkey_capture.grid(row=row, column=0, sticky='ew', pady=5)
         row += 1
 
         # 説明
@@ -671,14 +591,10 @@ class SettingsDialog:
                     new_settings['model_path'] = f"./models/{model_name}"
 
             # 基本設定
-            new_settings['input_mode'] = self.var_input_mode.get()
-            new_settings['vad_aggressiveness'] = self.var_vad_aggressiveness.get()
-            new_settings['vad_silence_duration'] = round(self.var_vad_silence_duration.get(), 1)
-            new_settings['min_recording_duration'] = round(self.var_min_recording_duration.get(), 1)
             new_settings['language'] = self.var_language.get()
             new_settings['auto_paste'] = self.var_auto_paste.get()
 
-            # sound_enabledの保存（デバッグログ付き）
+            # sound_enabledの保存
             sound_enabled_save = self.var_sound_enabled.get()
             logger.info(f"Saving sound_enabled with value: {sound_enabled_save}")
             new_settings['sound_enabled'] = sound_enabled_save
@@ -697,13 +613,9 @@ class SettingsDialog:
             new_settings['carry_initial_prompt'] = self.var_carry_initial_prompt.get()
 
             # ホットキー
-            manual_hotkey = self.manual_hotkey_capture.get()
-            if manual_hotkey:
-                new_settings['manual_hotkey'] = manual_hotkey
-
-            vad_hotkey = self.vad_hotkey_capture.get()
-            if vad_hotkey:
-                new_settings['vad_hotkey'] = vad_hotkey
+            hotkey = self.hotkey_capture.get()
+            if hotkey:
+                new_settings['hotkey'] = hotkey
 
             # コールバックを呼び出し
             logger.info("Calling save callback...")

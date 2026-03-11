@@ -5,9 +5,7 @@ from pydantic import BaseModel
 from .logger import logger
 
 class Settings(BaseModel):
-    hotkey: str = "<ctrl>+<alt>+<shift>+h"  # 旧設定（後方互換性のため残す）
-    manual_hotkey: str = "<ctrl>+<alt>+<shift>+j"  # マニュアルモード用ホットキー
-    vad_hotkey: str = "<ctrl>+<alt>+<shift>+k"  # VADモード用ホットキー
+    hotkey: str = "<ctrl>+<alt>+<shift>+j"
     language: str = "ja"
     model_path: str = "./models/ggml-small.bin"
     whisper_cli_path: str = "./bin/whisper-cli.exe"
@@ -23,12 +21,8 @@ class Settings(BaseModel):
     beam_size: int = 5
     temperature: float = 0.0
     carry_initial_prompt: bool = False
-    silence_threshold: int = 500  # VAD: 発話/無音の判定閾値（旧振幅ベース、現在は未使用）
-    noise_floor: int = 200  # この振幅以下の音は無視（旧振幅ベース、現在は未使用）
-    input_mode: str = "manual"  # 旧設定（後方互換性のため残す）
-    vad_aggressiveness: int = 2  # WebRTC VAD aggressiveness (0-3, 3が最も厳しい)
-    vad_silence_duration: float = 1.5
-    min_recording_duration: float = 1.0  # VADモードで文字起こしする最小録音時間（秒）
+    silence_threshold: int = 500  # 発話/無音の判定閾値
+    noise_floor: int = 200  # この振幅以下の音は無視
 
     def resolve_paths(self):
         # Resolve relative paths
