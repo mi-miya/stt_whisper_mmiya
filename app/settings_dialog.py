@@ -1,10 +1,9 @@
 """設定ダイアログ - GUIから設定を変更できるようにする"""
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
-from pathlib import Path
-import json
-from typing import Callable, Optional
+from tkinter import ttk, messagebox
+from typing import Callable
 from .logger import logger
+from .settings import AVAILABLE_MODELS, LANGUAGES, DEVICE_OPTIONS, COMPUTE_TYPE_OPTIONS
 
 
 class HotkeyCapture:
@@ -148,20 +147,7 @@ class HotkeyCapture:
 class SettingsDialog:
     """設定ダイアログ"""
 
-    # 言語オプション
-    LANGUAGES = [
-        ("日本語", "ja"),
-        ("英語", "en"),
-        ("中国語", "zh"),
-        ("韓国語", "ko"),
-        ("自動検出", "auto"),
-    ]
-
-    # サンプルレートオプション
     SAMPLE_RATES = [16000, 22050, 44100]
-
-    # GPUレイヤーオプション
-    GPU_LAYERS = [0, 30, 60, 99]
 
     def __init__(self, parent: tk.Tk, current_settings: dict, on_save: Callable[[dict], None]):
         """
@@ -219,17 +205,16 @@ class SettingsDialog:
         self.var_sound_enabled = tk.BooleanVar(value=sound_enabled_value)
 
         # 詳細設定
-        self.var_n_gpu_layers = tk.IntVar(value=s.get('n_gpu_layers', 0))
+        self.var_device = tk.StringVar(value=s.get('device', 'auto'))
+        self.var_compute_type = tk.StringVar(value=s.get('compute_type', 'float16'))
         self.var_sample_rate = tk.IntVar(value=s.get('sample_rate', 16000))
         self.var_silence_threshold = tk.IntVar(value=s.get('silence_threshold', 500))
         self.var_noise_floor = tk.IntVar(value=s.get('noise_floor', 200))
 
         # 認識精度
         self.var_initial_prompt = tk.StringVar(value=s.get('initial_prompt', ''))
-        self.var_best_of = tk.IntVar(value=s.get('best_of', 5))
-        self.var_beam_size = tk.IntVar(value=s.get('beam_size', 5))
+        self.var_beam_size = tk.IntVar(value=s.get('beam_size', 1))
         self.var_temperature = tk.DoubleVar(value=s.get('temperature', 0.0))
-        self.var_carry_initial_prompt = tk.BooleanVar(value=s.get('carry_initial_prompt', False))
 
     def _build_ui(self):
         """UIを構築"""
@@ -267,11 +252,12 @@ class SettingsDialog:
         model_frame = ttk.Frame(tab)
         model_frame.grid(row=row, column=1, sticky='ew', pady=5)
 
-        self.model_combo = ttk.Combobox(model_frame, state='readonly', width=35)
+        self.model_combo = ttk.Combobox(model_frame, width=40)
+        self.model_combo['values'] = [f"{model_id} ({desc})" for model_id, desc, _ in AVAILABLE_MODELS]
+        # 現在のモデルを設定
+        current_model = self.settings.get('model_name', 'large-v3-turbo')
+        self._set_model_combo(current_model)
         self.model_combo.pack(side='left', fill='x', expand=True)
-        self._populate_models()
-
-        ttk.Button(model_frame, text="参照...", command=self._browse_model, width=8).pack(side='left', padx=(5, 0))
 
         row += 1
 
@@ -279,10 +265,9 @@ class SettingsDialog:
         ttk.Label(tab, text="言語:").grid(row=row, column=0, sticky='w', pady=5)
 
         self.lang_combo = ttk.Combobox(tab, state='readonly', width=20)
-        self.lang_combo['values'] = [f"{name} ({code})" for name, code in self.LANGUAGES]
-        # 現在の値を表示用に変換
+        self.lang_combo['values'] = [f"{name} ({code})" for name, code in LANGUAGES]
         current_lang = self.var_language.get()
-        for name, code in self.LANGUAGES:
+        for name, code in LANGUAGES:
             if code == current_lang or f"{name} ({code})" == current_lang:
                 self.lang_combo.set(f"{name} ({code})")
                 self.var_language.set(code)
@@ -309,10 +294,26 @@ class SettingsDialog:
         ttk.Separator(tab, orient='horizontal').grid(row=row, column=0, columnspan=2, sticky='ew', pady=15)
         row += 1
 
-        info_text = "モデルが大きいほど精度が上がりますが、\n処理速度は遅くなります。"
+        info_text = "モデルが大きいほど精度が上がりますが、\n処理速度は遅くなり、GPUメモリも多く使用します。\n\nカスタムモデルIDを直接入力することもできます。\nモデルは初回使用時に自動でダウンロードされます。"
         ttk.Label(tab, text=info_text, foreground='gray').grid(row=row, column=0, columnspan=2, sticky='w')
 
         tab.columnconfigure(1, weight=1)
+
+    def _set_model_combo(self, model_name: str):
+        """モデルコンボボックスの値を設定"""
+        for model_id, desc, _ in AVAILABLE_MODELS:
+            if model_id == model_name:
+                self.model_combo.set(f"{model_id} ({desc})")
+                return
+        self.model_combo.set(model_name)
+
+    def _get_model_name(self) -> str:
+        """モデルコンボボックスからモデルIDを取得"""
+        selected = self.model_combo.get()
+        for model_id, desc, _ in AVAILABLE_MODELS:
+            if selected == f"{model_id} ({desc})":
+                return model_id
+        return selected.strip()
 
     def _build_advanced_tab(self):
         """詳細設定タブを構築"""
@@ -321,26 +322,46 @@ class SettingsDialog:
 
         row = 0
 
-        # GPU レイヤー
-        ttk.Label(tab, text="GPU使用 (レイヤー数):").grid(row=row, column=0, sticky='w', pady=5)
+        # デバイス選択
+        ttk.Label(tab, text="デバイス:").grid(row=row, column=0, sticky='w', pady=5)
 
-        gpu_frame = ttk.Frame(tab)
-        gpu_frame.grid(row=row, column=1, sticky='w', pady=5)
+        device_frame = ttk.Frame(tab)
+        device_frame.grid(row=row, column=1, sticky='w', pady=5)
 
-        self.gpu_combo = ttk.Combobox(gpu_frame, state='readonly', width=10)
-        self.gpu_combo['values'] = ['0 (CPUのみ)', '30', '60', '99 (最大)']
+        self.device_combo = ttk.Combobox(device_frame, state='readonly', width=20)
+        self.device_combo['values'] = [label for label, _ in DEVICE_OPTIONS]
         # 現在値を設定
-        current_gpu = self.var_n_gpu_layers.get()
-        if current_gpu == 0:
-            self.gpu_combo.set('0 (CPUのみ)')
-        elif current_gpu >= 99:
-            self.gpu_combo.set('99 (最大)')
+        current_device = self.var_device.get()
+        for label, value in DEVICE_OPTIONS:
+            if value == current_device:
+                self.device_combo.set(label)
+                break
         else:
-            self.gpu_combo.set(str(current_gpu))
-        self.gpu_combo.bind('<<ComboboxSelected>>', lambda e: self._on_gpu_select())
-        self.gpu_combo.pack(side='left')
+            self.device_combo.set(DEVICE_OPTIONS[0][0])
+        self.device_combo.bind('<<ComboboxSelected>>', lambda e: self._on_device_select())
+        self.device_combo.pack(side='left')
 
-        ttk.Label(gpu_frame, text="※ NVIDIA GPU のみ", foreground='gray').pack(side='left', padx=(10, 0))
+        row += 1
+
+        # 計算精度
+        ttk.Label(tab, text="計算精度:").grid(row=row, column=0, sticky='w', pady=5)
+
+        compute_frame = ttk.Frame(tab)
+        compute_frame.grid(row=row, column=1, sticky='w', pady=5)
+
+        self.compute_combo = ttk.Combobox(compute_frame, state='readonly', width=20)
+        self.compute_combo['values'] = [label for label, _ in COMPUTE_TYPE_OPTIONS]
+        current_compute = self.var_compute_type.get()
+        for label, value in COMPUTE_TYPE_OPTIONS:
+            if value == current_compute:
+                self.compute_combo.set(label)
+                break
+        else:
+            self.compute_combo.set(COMPUTE_TYPE_OPTIONS[0][0])
+        self.compute_combo.bind('<<ComboboxSelected>>', lambda e: self._on_compute_select())
+        self.compute_combo.pack(side='left')
+
+        ttk.Label(compute_frame, text="※ float16はGPU推奨", foreground='gray').pack(side='left', padx=(10, 0))
 
         row += 1
 
@@ -432,20 +453,7 @@ class SettingsDialog:
 
         row += 1
 
-        ttk.Checkbutton(
-            tab,
-            text="複数セグメントで初期プロンプトを継続使用",
-            variable=self.var_carry_initial_prompt
-        ).grid(row=row, column=0, columnspan=2, sticky='w', pady=5)
-
-        row += 1
-
         ttk.Separator(tab, orient='horizontal').grid(row=row, column=0, columnspan=2, sticky='ew', pady=10)
-        row += 1
-
-        # best_of
-        ttk.Label(tab, text="候補数 (best_of):").grid(row=row, column=0, sticky='w', pady=5)
-        ttk.Spinbox(tab, from_=1, to=10, textvariable=self.var_best_of, width=10).grid(row=row, column=1, sticky='w', pady=5)
         row += 1
 
         # beam_size
@@ -500,72 +508,29 @@ class SettingsDialog:
 
         tab.columnconfigure(0, weight=1)
 
-    def _populate_models(self):
-        """models/フォルダ内のモデルをスキャン"""
-        models_dir = Path.cwd() / 'models'
-        models = []
-
-        if models_dir.exists():
-            for f in models_dir.glob('*.bin'):
-                models.append(f.name)
-
-        if not models:
-            models = ['(モデルが見つかりません)']
-
-        self.model_combo['values'] = models
-
-        # 現在の設定を選択
-        current_model = Path(self.settings.get('model_path', '')).name
-        if current_model in models:
-            self.model_combo.set(current_model)
-        elif models:
-            self.model_combo.set(models[0])
-
-    def _browse_model(self):
-        """モデルファイルを参照"""
-        initial_dir = Path.cwd() / 'models'
-        if not initial_dir.exists():
-            initial_dir = Path.cwd()
-
-        filepath = filedialog.askopenfilename(
-            title="モデルファイルを選択",
-            initialdir=initial_dir,
-            filetypes=[("Whisperモデル", "*.bin"), ("すべてのファイル", "*.*")]
-        )
-
-        if filepath:
-            # models/ フォルダ内なら相対パスで保存
-            path = Path(filepath)
-            models_dir = Path.cwd() / 'models'
-
-            try:
-                rel_path = path.relative_to(models_dir)
-                self.model_combo.set(rel_path.name)
-                self._populate_models()  # リストを更新
-            except ValueError:
-                # models/ 外のファイルの場合は絶対パスを使用
-                self.model_combo.set(str(path))
-
     def _on_language_select(self):
         """言語選択時のハンドラ"""
         selected = self.lang_combo.get()
-        for name, code in self.LANGUAGES:
+        for name, code in LANGUAGES:
             if f"{name} ({code})" == selected:
                 self.var_language.set(code)
                 break
 
-    def _on_gpu_select(self):
-        """GPU選択時のハンドラ"""
-        selected = self.gpu_combo.get()
-        if '0' in selected:
-            self.var_n_gpu_layers.set(0)
-        elif '99' in selected:
-            self.var_n_gpu_layers.set(99)
-        else:
-            try:
-                self.var_n_gpu_layers.set(int(selected))
-            except:
-                pass
+    def _on_device_select(self):
+        """デバイス選択時のハンドラ"""
+        selected = self.device_combo.get()
+        for label, value in DEVICE_OPTIONS:
+            if label == selected:
+                self.var_device.set(value)
+                break
+
+    def _on_compute_select(self):
+        """計算精度選択時のハンドラ"""
+        selected = self.compute_combo.get()
+        for label, value in COMPUTE_TYPE_OPTIONS:
+            if label == selected:
+                self.var_compute_type.set(value)
+                break
 
     def _on_sr_select(self):
         """サンプルレート選択時のハンドラ"""
@@ -582,13 +547,10 @@ class SettingsDialog:
             # 設定を収集
             new_settings = self.settings.copy()
 
-            # モデルパス
-            model_name = self.model_combo.get()
-            if model_name and model_name != '(モデルが見つかりません)':
-                if Path(model_name).is_absolute():
-                    new_settings['model_path'] = model_name
-                else:
-                    new_settings['model_path'] = f"./models/{model_name}"
+            # モデル名
+            model_name = self._get_model_name()
+            if model_name:
+                new_settings['model_name'] = model_name
 
             # 基本設定
             new_settings['language'] = self.var_language.get()
@@ -600,17 +562,16 @@ class SettingsDialog:
             new_settings['sound_enabled'] = sound_enabled_save
 
             # 詳細設定
-            new_settings['n_gpu_layers'] = self.var_n_gpu_layers.get()
+            new_settings['device'] = self.var_device.get()
+            new_settings['compute_type'] = self.var_compute_type.get()
             new_settings['sample_rate'] = self.var_sample_rate.get()
             new_settings['silence_threshold'] = int(self.var_silence_threshold.get())
             new_settings['noise_floor'] = int(self.var_noise_floor.get())
 
             # 認識精度
             new_settings['initial_prompt'] = self.prompt_text.get('1.0', 'end-1c')
-            new_settings['best_of'] = self.var_best_of.get()
             new_settings['beam_size'] = self.var_beam_size.get()
             new_settings['temperature'] = self.var_temperature.get()
-            new_settings['carry_initial_prompt'] = self.var_carry_initial_prompt.get()
 
             # ホットキー
             hotkey = self.hotkey_capture.get()

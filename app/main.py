@@ -206,6 +206,7 @@ class MainApp:
         script = sys.argv[0]
 
         # リソースをクリーンアップ
+        self.transcriber.cleanup()
         if self.icon:
             try:
                 self.icon.stop()
@@ -226,6 +227,7 @@ class MainApp:
 
     def exit_app(self, icon, item):
         logger.info("Exit requested")
+        self.transcriber.cleanup()
         if self.icon:
             self.icon.stop()
         if self.hotkey_thread:

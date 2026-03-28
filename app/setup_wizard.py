@@ -1,31 +1,13 @@
 """セットアップウィザード - 初回起動時のガイド付きセットアップ"""
 import tkinter as tk
 from tkinter import ttk, messagebox
-from pathlib import Path
-import webbrowser
-import subprocess
-from typing import Callable, Optional, Dict, Any
+from typing import Callable, Dict, Any
 from .logger import logger
-from .settings import save_settings, Settings
+from .settings import save_settings, Settings, AVAILABLE_MODELS, LANGUAGES, DEVICE_OPTIONS
 
 
 class SetupWizard:
     """初回セットアップウィザード"""
-
-    # 言語オプション
-    LANGUAGES = [
-        ("日本語", "ja"),
-        ("英語", "en"),
-        ("中国語", "zh"),
-        ("韓国語", "ko"),
-    ]
-
-    # GPUオプション
-    GPU_OPTIONS = [
-        ("CPUのみを使用", 0),
-        ("GPUを使用（推奨）", 60),
-        ("GPUを最大限使用", 99),
-    ]
 
     def __init__(self, on_complete: Callable[[Dict[str, Any]], None], on_cancel: Callable[[], None]):
         """
@@ -37,7 +19,7 @@ class SetupWizard:
         self.on_cancel = on_cancel
 
         self.current_step = 0
-        self.total_steps = 5
+        self.total_steps = 4
 
         # 設定を格納
         self.settings: Dict[str, Any] = Settings().model_dump()
@@ -129,7 +111,6 @@ class SetupWizard:
 
         step_methods = [
             self._step_welcome,
-            self._step_whisper_cli,
             self._step_model,
             self._step_basic_settings,
             self._step_complete,
@@ -181,14 +162,14 @@ class SetupWizard:
 ローカル音声認識ツールです。
 
 主な特徴:
-・インターネット接続なしで動作
+・高速・高精度な音声認識 (faster-whisper)
 ・プライバシーを重視（音声データはローカルで処理）
 ・ホットキーで簡単に録音・文字起こし
+・GPU対応で高速処理
 
 このウィザードでは、以下を設定します:
-1. Whisper CLI の確認
-2. 音声認識モデルの選択
-3. 基本設定（言語、GPU使用など）
+1. 音声認識モデルの選択
+2. 基本設定（言語、デバイスなど）
 """
         ttk.Label(
             self.content_frame,
@@ -196,181 +177,60 @@ class SetupWizard:
             justify='left'
         ).pack(anchor='w')
 
-    def _step_whisper_cli(self):
-        """ステップ2: Whisper CLIの確認"""
-        ttk.Label(
-            self.content_frame,
-            text="Whisper CLI の確認",
-            font=('', 14, 'bold')
-        ).pack(pady=(0, 15))
-
-        # 存在チェック
-        cli_path = Path.cwd() / "bin" / "whisper-cli.exe"
-        cli_exists = cli_path.exists()
-
-        if cli_exists:
-            status_text = "✓ whisper-cli.exe が見つかりました"
-            status_color = "green"
-        else:
-            status_text = "✗ whisper-cli.exe が見つかりません"
-            status_color = "red"
-
-        status_label = ttk.Label(
-            self.content_frame,
-            text=status_text,
-            font=('', 11)
-        )
-        status_label.pack(pady=10)
-
-        if not cli_exists:
-            info_text = """
-Whisper CLI は音声認識の実行に必要です。
-
-以下の手順でダウンロードしてください:
-1. 下のボタンでダウンロードページを開く
-2. Assets から whisper-*-bin-x64.zip をダウンロード
-3. 解凍して whisper-cli.exe を bin/ フォルダに配置
-"""
-            ttk.Label(
-                self.content_frame,
-                text=info_text,
-                justify='left'
-            ).pack(anchor='w', pady=10)
-
-            ttk.Button(
-                self.content_frame,
-                text="ダウンロードページを開く",
-                command=lambda: webbrowser.open("https://github.com/ggerganov/whisper.cpp/releases")
-            ).pack(pady=10)
-
-            ttk.Label(
-                self.content_frame,
-                text="※ ダウンロード後、「次へ」を押してください",
-                foreground='gray'
-            ).pack()
-
     def _step_model(self):
-        """ステップ3: モデル選択"""
+        """ステップ2: モデル選択"""
         ttk.Label(
             self.content_frame,
             text="音声認識モデルの選択",
             font=('', 14, 'bold')
         ).pack(pady=(0, 15))
 
-        # models/ フォルダをスキャン
-        models_dir = Path.cwd() / "models"
-        models = []
+        ttk.Label(
+            self.content_frame,
+            text="使用するモデルを選択してください:"
+        ).pack(anchor='w')
 
-        if models_dir.exists():
-            models = [f.name for f in models_dir.glob("*.bin")]
+        # モデル選択
+        self.model_var = tk.StringVar(value=self.settings.get('model_name', 'large-v3-turbo'))
 
-        if models:
+        model_frame = ttk.Frame(self.content_frame)
+        model_frame.pack(fill='x', pady=10)
+
+        for model_id, desc, size in AVAILABLE_MODELS:
+            rb = ttk.Radiobutton(
+                model_frame,
+                text=f"{model_id}",
+                variable=self.model_var,
+                value=model_id
+            )
+            rb.pack(anchor='w', pady=2)
+
             ttk.Label(
-                self.content_frame,
-                text="以下のモデルが見つかりました:"
+                model_frame,
+                text=f"    {desc} ({size})",
+                foreground='gray'
             ).pack(anchor='w')
 
-            # モデル選択
-            self.model_var = tk.StringVar()
+        # 設定に反映
+        self.model_var.trace_add('write', lambda *args: self._update_model())
+        self._update_model()
 
-            model_frame = ttk.Frame(self.content_frame)
-            model_frame.pack(fill='x', pady=10)
+        ttk.Separator(self.content_frame, orient='horizontal').pack(fill='x', pady=15)
 
-            for model in sorted(models):
-                size_info = self._get_model_info(model)
-                rb = ttk.Radiobutton(
-                    model_frame,
-                    text=f"{model} {size_info}",
-                    variable=self.model_var,
-                    value=model
-                )
-                rb.pack(anchor='w', pady=2)
-
-            # デフォルト選択
-            if models:
-                # 優先順位: large-v3-turbo > medium > small
-                for preferred in ['large-v3-turbo', 'medium', 'small']:
-                    for m in models:
-                        if preferred in m.lower():
-                            self.model_var.set(m)
-                            break
-                    if self.model_var.get():
-                        break
-                if not self.model_var.get():
-                    self.model_var.set(models[0])
-
-            # 設定に反映
-            self.model_var.trace_add('write', lambda *args: self._update_model())
-            self._update_model()
-
-        else:
-            ttk.Label(
-                self.content_frame,
-                text="モデルが見つかりません",
-                foreground='red'
-            ).pack(pady=10)
-
-            info_text = """
-音声認識モデルをダウンロードする必要があります。
-
-推奨モデル:
-・ggml-small.bin (466MB) - 高速・軽量
-・ggml-medium.bin (1.5GB) - バランス型
-・ggml-large-v3-turbo.bin (1.5GB) - 高精度・高速
-
-下のボタンでダウンロードできます。
-"""
-            ttk.Label(
-                self.content_frame,
-                text=info_text,
-                justify='left'
-            ).pack(anchor='w')
-
-            ttk.Button(
-                self.content_frame,
-                text="モデルをダウンロード...",
-                command=self._open_model_downloader
-            ).pack(pady=10)
-
-    def _get_model_info(self, model_name: str) -> str:
-        """モデル情報を取得"""
-        name_lower = model_name.lower()
-        if 'tiny' in name_lower:
-            return "(最軽量・低精度)"
-        elif 'base' in name_lower:
-            return "(軽量)"
-        elif 'small' in name_lower:
-            return "(標準)"
-        elif 'medium' in name_lower:
-            return "(バランス型)"
-        elif 'large' in name_lower:
-            if 'turbo' in name_lower:
-                return "(高精度・高速・推奨)"
-            return "(高精度)"
-        return ""
+        ttk.Label(
+            self.content_frame,
+            text="モデルは初回使用時に自動でダウンロードされます。\n大きいモデルほど精度が高くなりますが、\nダウンロードサイズとメモリ使用量が増えます。",
+            foreground='gray',
+            justify='left'
+        ).pack(anchor='w')
 
     def _update_model(self):
         """モデル設定を更新"""
         if hasattr(self, 'model_var') and self.model_var.get():
-            self.settings['model_path'] = f"./models/{self.model_var.get()}"
-
-    def _open_model_downloader(self):
-        """モデルダウンローダーを開く"""
-        try:
-            from .model_downloader import ModelDownloader
-            ModelDownloader(self.root, self._on_model_downloaded)
-        except Exception as e:
-            logger.error(f"Failed to open model downloader: {e}")
-            webbrowser.open("https://huggingface.co/ggerganov/whisper.cpp/tree/main")
-
-    def _on_model_downloaded(self, model_path: str):
-        """モデルダウンロード完了"""
-        self.settings['model_path'] = model_path
-        # ステップを再表示してリストを更新
-        self._show_step(self.current_step)
+            self.settings['model_name'] = self.model_var.get()
 
     def _step_basic_settings(self):
-        """ステップ4: 基本設定"""
+        """ステップ3: 基本設定"""
         ttk.Label(
             self.content_frame,
             text="基本設定",
@@ -385,10 +245,10 @@ Whisper CLI は音声認識の実行に必要です。
 
         self.lang_var = tk.StringVar(value=self.settings.get('language', 'ja'))
         lang_combo = ttk.Combobox(lang_frame, textvariable=self.lang_var, state='readonly', width=20)
-        lang_combo['values'] = [f"{name} ({code})" for name, code in self.LANGUAGES]
+        lang_combo['values'] = [f"{name} ({code})" for name, code in LANGUAGES]
 
         # 現在値を設定
-        for name, code in self.LANGUAGES:
+        for name, code in LANGUAGES:
             if code == self.lang_var.get():
                 lang_combo.set(f"{name} ({code})")
                 break
@@ -396,30 +256,30 @@ Whisper CLI は音声認識の実行に必要です。
         lang_combo.bind('<<ComboboxSelected>>', self._on_lang_select)
         lang_combo.pack(side='left')
 
-        # GPU設定
-        gpu_frame = ttk.Frame(self.content_frame)
-        gpu_frame.pack(fill='x', pady=10)
+        # デバイス設定
+        device_frame = ttk.Frame(self.content_frame)
+        device_frame.pack(fill='x', pady=10)
 
-        ttk.Label(gpu_frame, text="GPU設定:", width=15).pack(side='left')
+        ttk.Label(device_frame, text="デバイス:", width=15).pack(side='left')
 
-        self.gpu_var = tk.IntVar(value=self.settings.get('n_gpu_layers', 0))
+        self.device_var = tk.StringVar(value=self.settings.get('device', 'auto'))
 
-        gpu_inner = ttk.Frame(gpu_frame)
-        gpu_inner.pack(side='left', fill='x')
+        device_inner = ttk.Frame(device_frame)
+        device_inner.pack(side='left', fill='x')
 
-        for label, value in self.GPU_OPTIONS:
+        for label, value in DEVICE_OPTIONS:
             rb = ttk.Radiobutton(
-                gpu_inner,
+                device_inner,
                 text=label,
-                variable=self.gpu_var,
+                variable=self.device_var,
                 value=value,
-                command=self._on_gpu_change
+                command=self._on_device_change
             )
             rb.pack(anchor='w')
 
         ttk.Label(
             self.content_frame,
-            text="※ NVIDIA GPU搭載PCの場合は「GPUを使用」がおすすめです",
+            text="※ NVIDIA GPU搭載PCの場合は「自動検出」がおすすめです\n※ CUDAが利用可能な場合は自動的にGPUが使用されます",
             foreground='gray'
         ).pack(pady=(5, 15))
 
@@ -443,14 +303,14 @@ Whisper CLI は音声認識の実行に必要です。
 
     def _on_lang_select(self, event=None):
         """言語選択ハンドラ"""
-        for name, code in self.LANGUAGES:
+        for name, code in LANGUAGES:
             if f"{name} ({code})" in self.lang_var.get():
                 self.settings['language'] = code
                 break
 
-    def _on_gpu_change(self):
-        """GPU設定変更ハンドラ"""
-        self.settings['n_gpu_layers'] = self.gpu_var.get()
+    def _on_device_change(self):
+        """デバイス設定変更ハンドラ"""
+        self.settings['device'] = self.device_var.get()
 
     def _on_auto_paste_change(self):
         """自動貼り付け設定変更"""
@@ -461,20 +321,27 @@ Whisper CLI は音声認識の実行に必要です。
         self.settings['sound_enabled'] = self.sound_var.get()
 
     def _step_complete(self):
-        """ステップ5: 完了"""
+        """ステップ4: 完了"""
         ttk.Label(
             self.content_frame,
             text="セットアップ完了",
             font=('', 16, 'bold')
         ).pack(pady=(0, 20))
 
+        # デバイス表示
+        device_display = self.settings.get('device', 'auto')
+        for label, value in DEVICE_OPTIONS:
+            if value == device_display:
+                device_display = label
+                break
+
         # 設定サマリー
         summary_text = f"""
 以下の設定でセットアップを完了します:
 
-モデル: {Path(self.settings.get('model_path', '')).name}
+モデル: {self.settings.get('model_name', 'large-v3-turbo')}
 言語: {self.settings.get('language', 'ja')}
-GPU使用: {self.settings.get('n_gpu_layers', 0)} レイヤー
+デバイス: {device_display}
 自動貼り付け: {'有効' if self.settings.get('auto_paste') else '無効'}
 効果音: {'有効' if self.settings.get('sound_enabled') else '無効'}
 
@@ -483,6 +350,7 @@ GPU使用: {self.settings.get('n_gpu_layers', 0)} レイヤー
 2. 話し終わったらもう一度同じキーを押す
 3. 認識結果がクリップボードにコピーされます
 
+※ 初回起動時はモデルのダウンロードに数分かかります。
 設定は右クリックメニューからいつでも変更できます。
 """
         ttk.Label(

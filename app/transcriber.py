@@ -1,13 +1,11 @@
-import subprocess
-import os
 import re
-import time
-import tempfile
 import threading
-from pathlib import Path
+import numpy as np
 from .settings import current_settings
 from .logger import logger
 from .error_handler import show_error
+
+_LANG_CODE_RE = re.compile(r'\(([a-z]{2,})\)')
 
 
 def extract_language_code(language: str) -> str:
@@ -16,52 +14,60 @@ def extract_language_code(language: str) -> str:
     "日本語 (ja)" -> "ja"
     "ja" -> "ja"
     """
-    # "(xx)" パターンを探す
-    match = re.search(r'\(([a-z]{2,})\)', language)
+    match = _LANG_CODE_RE.search(language)
     if match:
         return match.group(1)
-    # すでにコードのみの場合
     return language
 
 
 class Transcriber:
     def __init__(self):
-        self.cli_path = current_settings.whisper_cli_path
-        self.model_path = current_settings.model_path
-        self._cli_error_shown = False
-        self._model_error_shown = False
+        self._model = None
         self._warmup_done = False
         self._warmup_lock = threading.Lock()
-        self._last_transcribe_time = 0
-        # ウォームアップ間隔（秒）: この時間以上使用されていない場合、再ウォームアップ
-        self._warmup_interval = 300  # 5分
+        self._ready_event = threading.Event()
 
-    def _create_silent_wav(self) -> str:
-        """短い無音WAVファイルを作成（ウォームアップ用）"""
-        try:
-            import numpy as np
-            import scipy.io.wavfile as wav
-        except ImportError:
-            # 遅延インポートが失敗した場合はNone
-            return None
+    def _parse_device(self) -> tuple:
+        """device設定からfaster-whisper用の (device, device_index) を返す"""
+        device_setting = current_settings.device
+        if device_setting == "auto":
+            try:
+                import ctranslate2
+                ctranslate2.get_supported_compute_types("cuda")
+                return ("cuda", 0)
+            except Exception:
+                return ("cpu", 0)
+        if device_setting.startswith("cuda"):
+            parts = device_setting.split(":")
+            index = int(parts[1]) if len(parts) > 1 else 0
+            return ("cuda", index)
+        return ("cpu", 0)
 
-        # 0.5秒の無音（16kHzサンプルレート）
-        sample_rate = 16000
-        duration = 0.5
-        samples = int(sample_rate * duration)
-        audio_data = np.zeros(samples, dtype=np.int16)
+    def _load_model(self, device: str, device_index: int, compute_type: str) -> bool:
+        """モデルをロードしウォームアップ推論を実行する"""
+        from faster_whisper import WhisperModel
 
-        # 一時ファイルに保存
-        fd, temp_path = tempfile.mkstemp(suffix='.wav', prefix='warmup_')
-        os.close(fd)
-        wav.write(temp_path, sample_rate, audio_data)
-        return temp_path
+        logger.info(f"Loading model: {current_settings.model_name} on {device} with {compute_type}")
+
+        self._model = WhisperModel(
+            current_settings.model_name,
+            device=device,
+            device_index=device_index,
+            compute_type=compute_type,
+        )
+        self._device = device
+
+        # ウォームアップ
+        silent_audio = np.zeros(16000, dtype=np.float32)
+        lang = extract_language_code(current_settings.language)
+        warmup_lang = lang if lang != "auto" else "ja"
+        segments, _ = self._model.transcribe(silent_audio, language=warmup_lang)
+        for _ in segments:
+            pass
+        return True
 
     def warmup(self, force: bool = False) -> bool:
-        """Whisperモデルをウォームアップして初回遅延を軽減
-
-        Args:
-            force: Trueの場合、前回のウォームアップ状態を無視して強制実行
+        """Whisperモデルをロードしてウォームアップ
 
         Returns:
             ウォームアップが成功したかどうか
@@ -71,177 +77,104 @@ class Transcriber:
                 logger.debug("Warmup already done, skipping")
                 return True
 
-        start_time = time.time()
-        logger.info("Starting Whisper warmup...")
+            if force:
+                self._ready_event.clear()
 
-        # パスチェック
-        if not os.path.exists(self.cli_path):
-            logger.warning(f"Warmup skipped: Whisper CLI not found at {self.cli_path}")
-            return False
+            import time
 
-        if not os.path.exists(self.model_path):
-            logger.warning(f"Warmup skipped: Model not found at {self.model_path}")
-            return False
+            start_time = time.time()
+            logger.info("Starting Whisper model warmup...")
 
-        # 短い無音ファイルを作成
-        temp_wav = self._create_silent_wav()
-        if not temp_wav:
-            logger.warning("Warmup skipped: Failed to create silent WAV")
-            return False
+            device, device_index = self._parse_device()
+            compute_type = current_settings.compute_type
+            if device == "cpu" and compute_type != "float32":
+                compute_type = "float32"
 
-        try:
-            # ウォームアップ用コマンド（最小限のオプション）
-            cmd = [
-                self.cli_path,
-                "-m", self.model_path,
-                "-f", temp_wav,
-                "-l", "ja",
-                "-nt"
-            ]
-
-            startupinfo = None
-            if os.name == 'nt':
-                startupinfo = subprocess.STARTUPINFO()
-                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                encoding='utf-8',
-                errors='replace',
-                startupinfo=startupinfo,
-                timeout=60  # ウォームアップのタイムアウト
-            )
-
-            elapsed = time.time() - start_time
-
-            if result.returncode == 0:
-                with self._warmup_lock:
-                    self._warmup_done = True
-                    self._last_transcribe_time = time.time()
-                logger.info(f"Whisper warmup completed in {elapsed:.2f}s")
+            try:
+                self._load_model(device, device_index, compute_type)
+                elapsed = time.time() - start_time
+                self._warmup_done = True
+                self._ready_event.set()
+                logger.info(f"Whisper model warmup completed in {elapsed:.2f}s (device={device})")
                 return True
-            else:
-                logger.warning(f"Warmup failed with code {result.returncode}: {result.stderr[:200]}")
+
+            except Exception as e:
+                error_msg = str(e)
+                logger.error(f"Warmup error: {error_msg}")
+
+                if device == "cuda":
+                    logger.warning("GPU error detected, falling back to CPU...")
+                    self._model = None
+                    try:
+                        self._load_model("cpu", 0, "float32")
+                        elapsed = time.time() - start_time
+                        self._warmup_done = True
+                        self._ready_event.set()
+                        logger.info(f"Whisper model warmup completed on CPU fallback in {elapsed:.2f}s")
+                        show_error("gpu_error", "GPUメモリ不足のため、CPUモードで動作しています。")
+                        return True
+                    except Exception as fallback_e:
+                        logger.error(f"CPU fallback also failed: {fallback_e}")
+
                 return False
 
-        except subprocess.TimeoutExpired:
-            logger.warning("Warmup timed out")
-            return False
-        except Exception as e:
-            logger.warning(f"Warmup error: {e}")
-            return False
-        finally:
-            # 一時ファイルを削除
-            try:
-                if temp_wav and os.path.exists(temp_wav):
-                    os.remove(temp_wav)
-            except:
-                pass
-
-    def _check_and_warmup(self):
-        """必要に応じてウォームアップを実行（長時間アイドル時）"""
-        current_time = time.time()
-        if self._last_transcribe_time > 0:
-            elapsed = current_time - self._last_transcribe_time
-            if elapsed > self._warmup_interval:
-                logger.info(f"Re-warming up after {elapsed:.0f}s idle")
-                self.warmup(force=True)
-
     def transcribe(self, audio_file: str) -> str:
-        # 長時間アイドル後の再ウォームアップチェック
-        self._check_and_warmup()
-
-        if not os.path.exists(self.cli_path):
-            logger.error(f"Whisper CLI not found at {self.cli_path}")
-            if not self._cli_error_shown:
-                self._cli_error_shown = True
-                show_error("whisper_not_found", self.cli_path)
+        """音声ファイルを文字起こしする"""
+        if not self._ready_event.wait(timeout=120):
+            logger.error("Model not loaded after waiting. Warmup may have failed.")
+            show_error("pipeline_not_loaded")
             return ""
 
-        if not os.path.exists(self.model_path):
-            logger.error(f"Model file not found at {self.model_path}")
-            if not self._model_error_shown:
-                self._model_error_shown = True
-                show_error("model_not_found", self.model_path)
-            return ""
+        lang = extract_language_code(current_settings.language)
+        language = lang if lang != "auto" else None
 
-        # Build command: whisper-cli -m model -f wav -l lang -nt
-        # -nt: no timestamps (output just text)
-        language_code = extract_language_code(current_settings.language)
-        cmd = [
-            self.cli_path,
-            "-m", self.model_path,
-            "-f", audio_file,
-            "-l", language_code,
-            "-nt"
-        ]
-
+        kwargs = {}
         if current_settings.initial_prompt:
-             cmd.extend(["--prompt", current_settings.initial_prompt])
+            kwargs["initial_prompt"] = current_settings.initial_prompt
+        if current_settings.beam_size != 1:
+            kwargs["beam_size"] = current_settings.beam_size
+        if current_settings.temperature > 0.0:
+            kwargs["temperature"] = current_settings.temperature
 
-        if current_settings.carry_initial_prompt:
-             cmd.append("--carry-initial-prompt")
-
-        if current_settings.best_of != 5:
-             cmd.extend(["--best-of", str(current_settings.best_of)])
-
-        if current_settings.beam_size != 5:
-             cmd.extend(["--beam-size", str(current_settings.beam_size)])
-
-        if current_settings.temperature != 0.0:
-             cmd.extend(["--temperature", str(current_settings.temperature)])
-
-        logger.info(f"Running transcription: {' '.join(cmd)}")
+        logger.info(f"Running transcription: model={current_settings.model_name}")
 
         try:
-            # Run subprocess
-            # startupinfo to hide console window on Windows
-            startupinfo = None
-            if os.name == 'nt':
-                startupinfo = subprocess.STARTUPINFO()
-                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                encoding='utf-8',
-                errors='replace',
-                startupinfo=startupinfo
+            segments, info = self._model.transcribe(
+                audio_file,
+                language=language,
+                **kwargs,
             )
-
-            if result.returncode != 0:
-                logger.error(f"Transcription process failed with code {result.returncode}")
-                logger.error(f"Stderr: {result.stderr}")
-                # GPU メモリエラーの検出
-                if "CUDA" in result.stderr or "GPU" in result.stderr or "memory" in result.stderr.lower():
-                    show_error("gpu_error", result.stderr[:200])
-                else:
-                    show_error("transcription_failed", f"Exit code: {result.returncode}")
-                return ""
-
-            # Retrieve output.
-            # whisper-cli typically outputs to stdout with -nt.
-            text = result.stdout.strip().replace(" ", "")
-
-            # Some versions might output logs to stdout or stderr.
-            # If text is empty, check stderr just in case or if output file was generated.
-            # For now assume stdout has the text.
+            text = "".join(segment.text for segment in segments).strip().replace("\u3000", "")
 
             if not text:
                 logger.warning("Transcription returned empty text")
-                if result.stderr:
-                    logger.warning(f"Stderr content: {result.stderr}")
             else:
                 logger.info(f"Transcribed length: {len(text)}")
-
-            # 最後の文字起こし時刻を更新（ウォームアップ判定用）
-            self._last_transcribe_time = time.time()
 
             return text
 
         except Exception as e:
-            logger.error(f"Transcription execution error: {e}")
+            import traceback
+            error_msg = str(e)
+            logger.error(f"Transcription error: {error_msg}")
+            logger.error(f"Traceback:\n{traceback.format_exc()}")
+
+            if "CUDA" in error_msg or "out of memory" in error_msg.lower():
+                logger.warning("GPU OOM during transcription, falling back to CPU...")
+                try:
+                    self._model = None
+                    self._load_model("cpu", 0, "float32")
+                    show_error("gpu_error", "GPUメモリ不足のため、CPUモードに切り替えました。")
+                except Exception:
+                    show_error("gpu_error", error_msg[:200])
+            else:
+                show_error("transcription_failed", error_msg[:200])
+
             return ""
+
+    def cleanup(self):
+        """モデルを解放"""
+        logger.info("Cleaning up transcriber resources...")
+        self._model = None
+        self._warmup_done = False
+        self._ready_event.clear()

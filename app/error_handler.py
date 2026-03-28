@@ -1,29 +1,28 @@
 """エラーハンドラー - ユーザーフレンドリーなエラーメッセージを表示"""
 import tkinter as tk
 from tkinter import messagebox
-from typing import Optional, Callable
-import webbrowser
+from typing import Optional
 from .logger import logger
 
 
 # エラーメッセージの定義
 ERROR_MESSAGES = {
-    "whisper_not_found": {
-        "title": "音声認識エンジンが見つかりません",
-        "message": "bin/whisper-cli.exe が見つかりません。\n\n"
-                   "以下の手順で解決してください：\n"
-                   "1. whisper.cpp のリリースページからダウンロード\n"
-                   "2. whisper-cli.exe を bin/ フォルダに配置\n\n"
-                   "ダウンロードページを開きますか？",
-        "action": "open_whisper_release"
-    },
     "model_not_found": {
-        "title": "モデルファイルが見つかりません",
-        "message": "音声認識モデルが見つかりません。\n\n"
-                   "models/ フォルダにモデルファイル (*.bin) を\n"
-                   "配置してください。\n\n"
-                   "モデルをダウンロードしますか？",
-        "action": "open_model_downloader"
+        "title": "モデルのダウンロードに失敗しました",
+        "message": "音声認識モデルをダウンロードできませんでした。\n\n"
+                   "以下を確認してください：\n"
+                   "・インターネット接続が有効か\n"
+                   "・モデル名が正しいか\n"
+                   "・ディスク容量が十分か"
+    },
+    "pipeline_not_loaded": {
+        "title": "音声認識エンジンが準備できていません",
+        "message": "音声認識パイプラインの読み込みに失敗しました。\n\n"
+                   "以下を確認してください：\n"
+                   "・インターネット接続（初回はモデルダウンロードが必要）\n"
+                   "・GPUドライバが最新か\n"
+                   "・十分なメモリ/VRAMがあるか\n\n"
+                   "詳細は logs/app.log を確認してください。"
     },
     "recording_failed": {
         "title": "録音に失敗しました",
@@ -37,7 +36,7 @@ ERROR_MESSAGES = {
         "title": "音声認識に失敗しました",
         "message": "音声の文字変換に失敗しました。\n\n"
                    "以下を確認してください：\n"
-                   "・モデルファイルが正しいか\n"
+                   "・モデルが正しくロードされているか\n"
                    "・録音された音声が十分な長さか\n"
                    "・GPUメモリが不足していないか"
     },
@@ -52,9 +51,10 @@ ERROR_MESSAGES = {
         "title": "GPU処理でエラーが発生しました",
         "message": "GPUでの処理中にエラーが発生しました。\n\n"
                    "以下を試してください：\n"
-                   "・設定でGPUレイヤー数を減らす\n"
+                   "・設定でデバイスを「CPU」に変更する\n"
+                   "・計算精度を「float32」に変更する\n"
                    "・GPUドライバを更新する\n"
-                   "・CPUのみで処理する (n_gpu_layers=0)"
+                   "・より小さいモデルに変更する"
     },
     "config_error": {
         "title": "設定ファイルのエラー",
@@ -70,29 +70,16 @@ ERROR_MESSAGES = {
     }
 }
 
-# アクションの定義
-ACTIONS = {
-    "open_whisper_release": lambda: webbrowser.open("https://github.com/ggerganov/whisper.cpp/releases"),
-    "open_model_downloader": None,  # 後でモデルダウンローダーを設定
-}
-
 
 class ErrorHandler:
     """エラーハンドラークラス"""
 
     _root: Optional[tk.Tk] = None
-    _model_downloader_callback: Optional[Callable] = None
 
     @classmethod
     def set_root(cls, root: tk.Tk):
         """Tkinter ルートウィンドウを設定"""
         cls._root = root
-
-    @classmethod
-    def set_model_downloader(cls, callback: Callable):
-        """モデルダウンローダーのコールバックを設定"""
-        cls._model_downloader_callback = callback
-        ACTIONS["open_model_downloader"] = callback
 
     @classmethod
     def show_error(cls, error_type: str, details: Optional[str] = None) -> bool:
@@ -115,19 +102,7 @@ class ErrorHandler:
 
         logger.error(f"[{error_type}] {title}: {details or ''}")
 
-        # アクションがある場合は askquestion
-        action = error_info.get("action")
-        if action and action in ACTIONS and ACTIONS[action]:
-            result = messagebox.askyesno(title, message, icon='error')
-            if result:
-                try:
-                    ACTIONS[action]()
-                    return True
-                except Exception as e:
-                    logger.error(f"Action failed: {e}")
-        else:
-            messagebox.showerror(title, message)
-
+        messagebox.showerror(title, message)
         return False
 
     @classmethod
