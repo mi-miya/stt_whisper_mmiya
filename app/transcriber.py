@@ -1,4 +1,6 @@
+import os
 import re
+import tempfile
 import threading
 import numpy as np
 from .settings import current_settings
@@ -43,6 +45,54 @@ class Transcriber:
             return ("cuda", index)
         return ("cpu", 0)
 
+    def _build_transcribe_kwargs(self) -> tuple:
+        """transcribe() に渡す language と kwargs を組み立てる"""
+        lang = extract_language_code(current_settings.language)
+        language = lang if lang != "auto" else None
+
+        kwargs = {}
+        if current_settings.initial_prompt:
+            kwargs["initial_prompt"] = current_settings.initial_prompt
+        if current_settings.beam_size != 1:
+            kwargs["beam_size"] = current_settings.beam_size
+        if current_settings.temperature > 0.0:
+            kwargs["temperature"] = current_settings.temperature
+
+        return language, kwargs
+
+    def _warmup_inference(self) -> None:
+        """本番と同じコードパスを温める。
+
+        - WAV ファイル経由で PyAV のオーディオデコーダ初期化を済ませる
+        - 本番と同じ initial_prompt / beam_size / temperature を使い
+          CUDA カーネルの autotune を済ませる
+        - 録音側ライブラリ (sounddevice / scipy) も同時にロードして
+          初回ホットキー押下時のレイテンシを消す
+        """
+        from .recorder import _lazy_import
+
+        _sd, np_mod, wav = _lazy_import()
+
+        sample_rate = 16000
+        # 完全な無音だと内部で短絡してデコーダ/デコーダパスが温まらないため、
+        # 低振幅のホワイトノイズを 1 秒生成する
+        n_samples = sample_rate
+        audio = (np_mod.random.randn(n_samples) * 50).astype(np_mod.int16)
+
+        fd, tmp_path = tempfile.mkstemp(suffix=".wav", prefix="warmup_")
+        os.close(fd)
+        try:
+            wav.write(tmp_path, sample_rate, audio)
+            language, kwargs = self._build_transcribe_kwargs()
+            segments, _ = self._model.transcribe(tmp_path, language=language, **kwargs)
+            for _ in segments:
+                pass
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
     def _load_model(self, device: str, device_index: int, compute_type: str) -> bool:
         """モデルをロードしウォームアップ推論を実行する"""
         from faster_whisper import WhisperModel
@@ -57,13 +107,7 @@ class Transcriber:
         )
         self._device = device
 
-        # ウォームアップ
-        silent_audio = np.zeros(16000, dtype=np.float32)
-        lang = extract_language_code(current_settings.language)
-        warmup_lang = lang if lang != "auto" else "ja"
-        segments, _ = self._model.transcribe(silent_audio, language=warmup_lang)
-        for _ in segments:
-            pass
+        self._warmup_inference()
         return True
 
     def warmup(self, force: bool = False) -> bool:
@@ -125,16 +169,7 @@ class Transcriber:
             show_error("pipeline_not_loaded")
             return ""
 
-        lang = extract_language_code(current_settings.language)
-        language = lang if lang != "auto" else None
-
-        kwargs = {}
-        if current_settings.initial_prompt:
-            kwargs["initial_prompt"] = current_settings.initial_prompt
-        if current_settings.beam_size != 1:
-            kwargs["beam_size"] = current_settings.beam_size
-        if current_settings.temperature > 0.0:
-            kwargs["temperature"] = current_settings.temperature
+        language, kwargs = self._build_transcribe_kwargs()
 
         logger.info(f"Running transcription: model={current_settings.model_name}")
 

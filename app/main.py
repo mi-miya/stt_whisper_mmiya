@@ -141,6 +141,7 @@ class MainApp:
         if not audio_file:
             # Failed to record or short or silent
             logger.info("Recording was silent or invalid. Returning to IDLE.")
+            sounds.play_cancel()
             with self.lock:
                 self.state = IDLE
                 self.update_icon_state()
@@ -162,6 +163,8 @@ class MainApp:
                 if current_settings.auto_paste:
                     paste_text()
                 sounds.play_finish()
+            else:
+                sounds.play_cancel()
         finally:
             self.recorder.cleanup_file(audio_file)
             with self.lock:
