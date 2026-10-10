@@ -15,6 +15,9 @@ logs/
 models/
 bin/
 
+# CUDA 12 runtime DLLs (cuBLAS)
+cuda_libs/
+
 # Audio files
 *.wav
 *.mp3

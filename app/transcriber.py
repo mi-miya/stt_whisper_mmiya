@@ -3,8 +3,20 @@ import threading
 from .settings import current_settings
 from .logger import logger
 from .error_handler import show_error
+from .cuda_libs import ensure_cuda12_libs
 
 _LANG_CODE_RE = re.compile(r'\(([a-z]{2,})\)')
+
+# GPU 起因と判断してCPUフォールバックさせる例外メッセージの手がかり。
+# CUDA ランタイムDLLの欠落は "CUDA" も "out of memory" も含まないため、
+# ライブラリ名でも拾う必要がある
+_GPU_ERROR_HINTS = ("cuda", "cublas", "cudnn", "out of memory", "gpu")
+
+
+def is_gpu_error(message: str) -> bool:
+    """例外メッセージが GPU 起因かどうかを判定する"""
+    lowered = message.lower()
+    return any(hint in lowered for hint in _GPU_ERROR_HINTS)
 
 
 def extract_language_code(language: str) -> str:
@@ -22,6 +34,7 @@ def extract_language_code(language: str) -> str:
 class Transcriber:
     def __init__(self):
         self._model = None
+        self._device = None
         self._warmup_done = False
         self._warmup_lock = threading.Lock()
         self._ready_event = threading.Event()
@@ -33,9 +46,13 @@ class Transcriber:
             try:
                 import ctranslate2
                 ctranslate2.get_supported_compute_types("cuda")
-                return ("cuda", 0)
             except Exception:
                 return ("cpu", 0)
+            # 自動検出では、cuBLAS が無ければエラーにせず静かにCPUを使う
+            if not ensure_cuda12_libs():
+                logger.warning("CUDA 12 libraries not found, using CPU (device=auto)")
+                return ("cpu", 0)
+            return ("cuda", 0)
         if device_setting.startswith("cuda"):
             parts = device_setting.split(":")
             index = int(parts[1]) if len(parts) > 1 else 0
@@ -86,6 +103,13 @@ class Transcriber:
 
     def _load_model(self, device: str, device_index: int, compute_type: str) -> bool:
         """モデルをロードしウォームアップ推論を実行する"""
+        if device == "cuda":
+            # cuBLAS は最初の推論時に遅延ロードされるため、モデル構築より
+            # 前に PATH を通しておく必要がある。見つからない場合はGPUへ
+            # ロードしても最初の推論で必ず失敗するため、ロード前に打ち切る
+            if not ensure_cuda12_libs():
+                raise RuntimeError("cublas64_12.dll が見つかりません (CUDA 12 ランタイムが必要です)")
+
         from faster_whisper import WhisperModel
 
         logger.info(f"Loading model: {current_settings.model_name} on {device} with {compute_type}")
@@ -139,7 +163,9 @@ class Transcriber:
                 error_msg = str(e)
                 logger.error(f"Warmup error: {error_msg}")
 
-                if device == "cuda":
+                # ダウンロード失敗などGPUと無関係な原因でCPUへ切り替えても
+                # 同じ失敗を繰り返すだけなので、GPU起因の場合に限る
+                if device == "cuda" and is_gpu_error(error_msg):
                     logger.warning("GPU error detected, falling back to CPU...")
                     self._model = None
                     try:
@@ -148,7 +174,7 @@ class Transcriber:
                         self._warmup_done = True
                         self._ready_event.set()
                         logger.info(f"Whisper model warmup completed on CPU fallback in {elapsed:.2f}s")
-                        show_error("gpu_error", "GPUメモリ不足のため、CPUモードで動作しています。")
+                        show_error("gpu_error", f"CPUモードで動作しています。\n{error_msg[:200]}")
                         return True
                     except Exception as fallback_e:
                         logger.error(f"CPU fallback also failed: {fallback_e}")
@@ -195,12 +221,12 @@ class Transcriber:
             logger.error(f"Transcription error: {error_msg}")
             logger.error(f"Traceback:\n{traceback.format_exc()}")
 
-            if "CUDA" in error_msg or "out of memory" in error_msg.lower():
-                logger.warning("GPU OOM during transcription, falling back to CPU...")
+            if self._device == "cuda" and is_gpu_error(error_msg):
+                logger.warning("GPU error during transcription, falling back to CPU...")
                 try:
                     self._model = None
                     self._load_model("cpu", 0, "int8")
-                    show_error("gpu_error", "GPUメモリ不足のため、CPUモードに切り替えました。")
+                    show_error("gpu_error", f"CPUモードに切り替えました。\n{error_msg[:200]}")
                 except Exception:
                     show_error("gpu_error", error_msg[:200])
             else:
