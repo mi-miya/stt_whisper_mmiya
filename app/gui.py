@@ -111,13 +111,10 @@ class FloatingWidget:
     def _save_position(self):
         """現在のウィンドウ位置を設定ファイルに保存する"""
         try:
-            from .settings import current_settings, load_settings_as_dict, save_settings
+            from .settings import current_settings, update_settings
 
             x, y = self.root.winfo_x(), self.root.winfo_y()
-            data = load_settings_as_dict()
-            data['widget_x'] = x
-            data['widget_y'] = y
-            if save_settings(data):
+            if update_settings({'widget_x': x, 'widget_y': y}):
                 current_settings.widget_x = x
                 current_settings.widget_y = y
                 logger.info(f"Widget position saved: +{x}+{y}")

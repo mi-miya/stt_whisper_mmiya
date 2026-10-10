@@ -5,7 +5,7 @@ import sys
 import ctypes
 import time
 from pathlib import Path
-from .settings import current_settings, load_settings_as_dict, save_settings
+from .settings import current_settings, load_settings_as_dict, save_settings, config_load_error
 from .logger import logger
 from .error_handler import ErrorHandler, show_error
 from .recorder import Recorder
@@ -334,6 +334,10 @@ if __name__ == "__main__":
 
         # ワーカースレッドからのエラーダイアログをメインスレッドで表示させる
         ErrorHandler.set_root(app.gui.root)
+
+        # 設定ファイルの読み込みに問題があった場合は、起動後に知らせる
+        if config_load_error:
+            app.gui.root.after(0, lambda: show_error("config_error", config_load_error))
 
         # Override exit to close GUI too
         original_exit = app.exit_app

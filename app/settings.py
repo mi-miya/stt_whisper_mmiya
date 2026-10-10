@@ -1,7 +1,9 @@
 import json
+import os
+import shutil
 from pathlib import Path
 from typing import Optional
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 from .logger import logger
 
 
@@ -122,24 +124,68 @@ class Settings(BaseModel):
         if self.temp_dir:
             self.temp_dir = str(Path(self.temp_dir).resolve())
 
+# 起動時の設定読み込みで問題があった場合の、ユーザー向けの説明。
+# 読み込み時点ではまだウィンドウが無いため、表示は main 側で行う
+config_load_error: Optional[str] = None
+
+
+def _read_config(config_path: Path) -> dict:
+    """設定ファイルを読み、マイグレーション済みの辞書を返す。読めなければ例外を送出する"""
+    # メモ帳などで保存すると付くBOMを許容するため utf-8-sig で読む
+    with open(config_path, "r", encoding="utf-8-sig") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        raise ValueError("config root must be a JSON object")
+    # 旧形式からのマイグレーション
+    return migrate_config(data)
+
+
+def _backup_broken_config(config_path: Path) -> Optional[Path]:
+    """読めない設定ファイルを .bak に退避する
+
+    この後の保存で既定値に上書きされても、手で直せば復旧できるようにする。
+    """
+    backup_path = config_path.with_name(config_path.name + ".bak")
+    try:
+        shutil.copy2(config_path, backup_path)
+        logger.warning(f"Unreadable config backed up to {backup_path}")
+        return backup_path
+    except OSError as e:
+        logger.error(f"Failed to back up config: {e}")
+        return None
+
+
 def load_settings(path: str = "config.json") -> Settings:
+    global config_load_error
+
     config_path = Path(path)
     if not config_path.exists():
         logger.warning(f"Config file {path} not found. Using defaults.")
         return Settings()
 
     try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        # 旧形式からのマイグレーション
-        data = migrate_config(data)
-        settings = Settings(**data)
-        settings.resolve_paths()
-        logger.info("Settings loaded successfully")
-        return settings
+        data = _read_config(config_path)
     except Exception as e:
         logger.error(f"Failed to load settings: {e}")
+        backup_path = _backup_broken_config(config_path)
+        config_load_error = f"{config_path.name} を読み取れないため、既定の設定で起動しました。"
+        if backup_path:
+            config_load_error += f"\n元のファイルは {backup_path.name} に退避しました。"
         return Settings()
+
+    try:
+        settings = Settings(**data)
+    except ValidationError as e:
+        # 不正な項目が1つあるだけで全設定を既定値に戻さないよう、
+        # 問題のある項目だけを既定値にする
+        bad_keys = sorted({str(err["loc"][0]) for err in e.errors() if err["loc"]})
+        logger.error(f"Invalid settings ignored ({', '.join(bad_keys)}): {e}")
+        settings = Settings(**{k: v for k, v in data.items() if k not in bad_keys})
+        config_load_error = f"次の項目の値が不正なため、既定値を使っています: {', '.join(bad_keys)}"
+
+    settings.resolve_paths()
+    logger.info("Settings loaded successfully")
+    return settings
 
 
 def save_settings(settings_dict: dict, path: str = "config.json") -> bool:
@@ -153,17 +199,27 @@ def save_settings(settings_dict: dict, path: str = "config.json") -> bool:
         成功した場合はTrue、失敗した場合はFalse
     """
     config_path = Path(path)
+    # 書き込み途中で落ちても元のファイルが空や書きかけにならないよう、
+    # 一時ファイルに書き切ってから置き換える
+    tmp_path = config_path.with_name(config_path.name + ".tmp")
 
     try:
         save_dict = {k: v for k, v in settings_dict.items() if k not in _DEPRECATED_KEYS}
 
-        with open(config_path, "w", encoding="utf-8") as f:
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(save_dict, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, config_path)
 
         logger.info(f"Settings saved to {path}")
         return True
     except Exception as e:
         logger.error(f"Failed to save settings: {e}")
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
         return False
 
 
@@ -175,13 +231,35 @@ def load_settings_as_dict(path: str = "config.json") -> dict:
         return Settings().model_dump()
 
     try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        # マイグレーションを適用して返す
-        return migrate_config(data)
+        return _read_config(config_path)
     except Exception as e:
         logger.error(f"Failed to load settings as dict: {e}")
+        # 呼び出し側がこの既定値を保存しても元の内容を失わないようにする
+        _backup_broken_config(config_path)
         return Settings().model_dump()
+
+
+def update_settings(changes: dict, path: str = "config.json") -> bool:
+    """設定ファイルの一部の項目だけを書き換える
+
+    既存のファイルが読めない場合は書き込まない（壊れた、あるいは編集途中の
+    ファイルを、ユーザーの操作なしに既定値で上書きしないため）。
+
+    Returns:
+        保存できた場合はTrue
+    """
+    config_path = Path(path)
+    if config_path.exists():
+        try:
+            data = _read_config(config_path)
+        except Exception as e:
+            logger.error(f"Settings not updated because {path} is unreadable: {e}")
+            return False
+    else:
+        data = Settings().model_dump()
+
+    data.update(changes)
+    return save_settings(data, path)
 
 
 # Global settings instance

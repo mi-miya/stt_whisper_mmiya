@@ -35,6 +35,8 @@ $RECYCLE.BIN/
 
 # Configuration
 config.json
+config.json.bak
+config.json.tmp
 
 # Claude Code
 .claude/settings.json
