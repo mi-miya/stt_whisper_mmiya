@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from .settings import current_settings, load_settings_as_dict, save_settings
 from .logger import logger
+from .error_handler import ErrorHandler, show_error
 from .recorder import Recorder
 from .transcriber import Transcriber
 from .clipboard_win import set_text, paste_text
@@ -185,8 +186,12 @@ class MainApp:
                 logger.info("Model still loading, showing LOADING state...")
                 if self.gui:
                     self.gui.set_state("LOADING", "orange")
-                self.transcriber.wait_until_ready()
+                ready = self.transcriber.ensure_ready()
                 self.update_icon_state()
+                if not ready:
+                    # エラー表示は transcriber 側で済んでいる
+                    sounds.play_cancel()
+                    return
 
             text = self.transcriber.transcribe(audio)
             if text:
@@ -204,8 +209,16 @@ class MainApp:
     def run_hotkey(self):
         logger.info(f"App starting. Hotkey: {current_settings.hotkey}")
         # Start hotkey listener
-        self.hotkey_thread = HotkeyListener(current_settings.hotkey, self.on_hotkey, hotkey_id=1)
+        self.hotkey_thread = HotkeyListener(
+            current_settings.hotkey, self.on_hotkey, hotkey_id=1,
+            on_error=self._on_hotkey_error
+        )
         self.hotkey_thread.start()
+
+    def _on_hotkey_error(self):
+        # 登録に失敗するとアイコンは正常に見えたままキーだけ効かなくなるため、
+        # 必ずユーザーに知らせる
+        show_error("hotkey_failed", f"ホットキー: {current_settings.hotkey}")
 
     def run_tray(self):
         self.setup_tray()
@@ -318,6 +331,9 @@ if __name__ == "__main__":
             on_exit_callback=lambda: app.exit_app(None, None),
             on_settings_callback=app.show_settings_dialog
         )
+
+        # ワーカースレッドからのエラーダイアログをメインスレッドで表示させる
+        ErrorHandler.set_root(app.gui.root)
 
         # Override exit to close GUI too
         original_exit = app.exit_app

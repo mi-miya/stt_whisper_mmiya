@@ -1,5 +1,6 @@
 import re
 import threading
+import time
 from .settings import current_settings
 from .logger import logger
 from .error_handler import show_error
@@ -35,9 +36,12 @@ class Transcriber:
     def __init__(self):
         self._model = None
         self._device = None
-        self._warmup_done = False
         self._warmup_lock = threading.Lock()
+        # モデルが使える状態になったら立つ
         self._ready_event = threading.Event()
+        # ロードの成否が確定したら立つ。失敗時に _ready_event を待ち続けて
+        # タイムアウトまで固まらないよう、待機側はこちらを待つ
+        self._settled_event = threading.Event()
 
     def _parse_device(self) -> tuple:
         """device設定からfaster-whisper用の (device, device_index) を返す"""
@@ -125,21 +129,21 @@ class Transcriber:
         self._warmup_inference()
         return True
 
-    def warmup(self, force: bool = False) -> bool:
+    def warmup(self) -> bool:
         """Whisperモデルをロードしてウォームアップ
 
+        既にロード済みなら何もしない。前回のロードが失敗していた場合は
+        ロードし直す。
+
         Returns:
-            ウォームアップが成功したかどうか
+            モデルが使える状態になったかどうか
         """
         with self._warmup_lock:
-            if self._warmup_done and not force:
+            if self._ready_event.is_set():
                 logger.debug("Warmup already done, skipping")
                 return True
 
-            if force:
-                self._ready_event.clear()
-
-            import time
+            self._settled_event.clear()
 
             start_time = time.time()
             logger.info("Starting Whisper model warmup...")
@@ -151,49 +155,74 @@ class Transcriber:
             if device == "cpu" and compute_type not in ("int8", "float32"):
                 compute_type = "int8"
 
+            gpu_error_msg = None
             try:
-                self._load_model(device, device_index, compute_type)
-                elapsed = time.time() - start_time
-                self._warmup_done = True
-                self._ready_event.set()
-                logger.info(f"Whisper model warmup completed in {elapsed:.2f}s (device={device})")
-                return True
-
+                try:
+                    self._load_model(device, device_index, compute_type)
+                except Exception as e:
+                    # ダウンロード失敗などGPUと無関係な原因でCPUへ切り替えても
+                    # 同じ失敗を繰り返すだけなので、GPU起因の場合に限る
+                    if device != "cuda" or not is_gpu_error(str(e)):
+                        raise
+                    gpu_error_msg = str(e)
+                    logger.error(f"Warmup error: {gpu_error_msg}")
+                    logger.warning("GPU error detected, falling back to CPU...")
+                    self._load_model("cpu", 0, "int8")
             except Exception as e:
                 error_msg = str(e)
                 logger.error(f"Warmup error: {error_msg}")
-
-                # ダウンロード失敗などGPUと無関係な原因でCPUへ切り替えても
-                # 同じ失敗を繰り返すだけなので、GPU起因の場合に限る
-                if device == "cuda" and is_gpu_error(error_msg):
-                    logger.warning("GPU error detected, falling back to CPU...")
-                    self._model = None
-                    try:
-                        self._load_model("cpu", 0, "int8")
-                        elapsed = time.time() - start_time
-                        self._warmup_done = True
-                        self._ready_event.set()
-                        logger.info(f"Whisper model warmup completed on CPU fallback in {elapsed:.2f}s")
-                        show_error("gpu_error", f"CPUモードで動作しています。\n{error_msg[:200]}")
-                        return True
-                    except Exception as fallback_e:
-                        logger.error(f"CPU fallback also failed: {fallback_e}")
-
+                self._mark_load_failed()
+                show_error("pipeline_not_loaded", error_msg[:200])
                 return False
+
+            self._ready_event.set()
+            self._settled_event.set()
+            elapsed = time.time() - start_time
+            logger.info(f"Whisper model warmup completed in {elapsed:.2f}s (device={self._device})")
+            if gpu_error_msg:
+                show_error("gpu_error", f"CPUモードで動作しています。\n{gpu_error_msg[:200]}")
+            return True
+
+    def _mark_load_failed(self) -> None:
+        """モデルが使えない状態であることを記録し、待機中のスレッドを解放する"""
+        self._model = None
+        self._device = None
+        self._ready_event.clear()
+        self._settled_event.set()
 
     def is_ready(self) -> bool:
         """モデルのロードが完了しているかどうか"""
         return self._ready_event.is_set()
 
     def wait_until_ready(self, timeout: float = 120) -> bool:
-        """モデルのロード完了を待つ"""
-        return self._ready_event.wait(timeout=timeout)
+        """モデルのロード完了を待つ。ロードが失敗した場合は待たずに False を返す"""
+        self._settled_event.wait(timeout=timeout)
+        return self._ready_event.is_set()
+
+    def ensure_ready(self, timeout: float = 120) -> bool:
+        """モデルが使える状態になるまで待つ
+
+        ロードが失敗していた場合は1回だけロードし直す（ネットワーク断などが
+        解消していれば、アプリを再起動しなくても復旧できる）。
+        """
+        if self.wait_until_ready(timeout):
+            return True
+
+        if not self._settled_event.is_set():
+            logger.error("Model is still loading after waiting.")
+            show_error("pipeline_not_loaded")
+            return False
+
+        logger.info("Previous model load failed, retrying...")
+        return self.warmup()
+
+    def _run_transcription(self, audio, language, kwargs: dict) -> str:
+        segments, _ = self._model.transcribe(audio, language=language, **kwargs)
+        return "".join(segment.text for segment in segments).strip().replace("\u3000", "")
 
     def transcribe(self, audio) -> str:
         """音声データ (float32 / 16kHz の numpy 配列) を文字起こしする"""
-        if not self.wait_until_ready():
-            logger.error("Model not loaded after waiting. Warmup may have failed.")
-            show_error("pipeline_not_loaded")
+        if not self.ensure_ready():
             return ""
 
         language, kwargs = self._build_transcribe_kwargs()
@@ -201,42 +230,51 @@ class Transcriber:
         logger.info(f"Running transcription: model={current_settings.model_name}")
 
         try:
-            segments, info = self._model.transcribe(
-                audio,
-                language=language,
-                **kwargs,
-            )
-            text = "".join(segment.text for segment in segments).strip().replace("\u3000", "")
-
-            if not text:
-                logger.warning("Transcription returned empty text")
-            else:
-                logger.info(f"Transcribed length: {len(text)}")
-
-            return text
-
+            text = self._run_transcription(audio, language, kwargs)
         except Exception as e:
-            import traceback
             error_msg = str(e)
-            logger.error(f"Transcription error: {error_msg}")
-            logger.error(f"Traceback:\n{traceback.format_exc()}")
+            logger.exception(f"Transcription error: {error_msg}")
 
             if self._device == "cuda" and is_gpu_error(error_msg):
-                logger.warning("GPU error during transcription, falling back to CPU...")
-                try:
-                    self._model = None
-                    self._load_model("cpu", 0, "int8")
-                    show_error("gpu_error", f"CPUモードに切り替えました。\n{error_msg[:200]}")
-                except Exception:
-                    show_error("gpu_error", error_msg[:200])
+                text = self._retry_on_cpu(audio, language, kwargs, error_msg)
             else:
                 show_error("transcription_failed", error_msg[:200])
+                return ""
 
+        if not text:
+            logger.warning("Transcription returned empty text")
+        else:
+            logger.info(f"Transcribed length: {len(text)}")
+
+        return text
+
+    def _retry_on_cpu(self, audio, language, kwargs: dict, gpu_error_msg: str) -> str:
+        """GPUエラー時にCPUへ切り替え、同じ音声をもう一度文字起こしする
+
+        話した内容を捨てずに済むよう、切り替え後に再実行する。
+        """
+        logger.warning("GPU error during transcription, falling back to CPU...")
+        try:
+            self._load_model("cpu", 0, "int8")
+        except Exception as e:
+            logger.error(f"CPU fallback also failed: {e}")
+            # モデルが無い状態で残さない。次回の文字起こし時にロードし直す
+            self._mark_load_failed()
+            show_error("gpu_error", gpu_error_msg[:200])
+            return ""
+
+        show_error("gpu_error", f"CPUモードに切り替えました。\n{gpu_error_msg[:200]}")
+
+        try:
+            return self._run_transcription(audio, language, kwargs)
+        except Exception as e:
+            logger.exception(f"Transcription error on CPU fallback: {e}")
+            show_error("transcription_failed", str(e)[:200])
             return ""
 
     def cleanup(self):
         """モデルを解放"""
         logger.info("Cleaning up transcriber resources...")
         self._model = None
-        self._warmup_done = False
         self._ready_event.clear()
+        self._settled_event.clear()

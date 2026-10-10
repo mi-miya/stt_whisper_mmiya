@@ -1,8 +1,13 @@
 """エラーハンドラー - ユーザーフレンドリーなエラーメッセージを表示"""
+import queue
+import threading
 import tkinter as tk
 from tkinter import messagebox
-from typing import Optional
+from typing import Callable, Optional
 from .logger import logger
+
+# ワーカースレッドからのダイアログ要求を確認する間隔
+DIALOG_POLL_INTERVAL_MS = 100
 
 
 # エラーメッセージの定義
@@ -60,10 +65,11 @@ ERROR_MESSAGES = {
     },
     "config_error": {
         "title": "設定ファイルのエラー",
-        "message": "設定ファイル (config.json) の読み込みに\n"
-                   "失敗しました。\n\n"
-                   "config.default.json をコピーして\n"
-                   "config.json として保存してください。"
+        "message": "設定ファイル (config.json) を正しく\n"
+                   "読み込めませんでした。\n\n"
+                   "読み込めなかった項目は既定値で動作しています。\n"
+                   "アイコンを右クリック →「設定」から\n"
+                   "設定し直してください。"
     },
     "unknown_error": {
         "title": "エラーが発生しました",
@@ -74,25 +80,67 @@ ERROR_MESSAGES = {
 
 
 class ErrorHandler:
-    """エラーハンドラークラス"""
+    """エラーハンドラークラス
+
+    ダイアログは録音・文字起こし・ホットキーなどのワーカースレッドからも
+    要求されるが、Tkinter はメインスレッドからしか操作できない。そのため
+    ワーカースレッドからの要求はキューに積むだけにして呼び出し元を待たせず、
+    メインスレッドが定期的に取り出して表示する。ルートウィンドウがまだ無い
+    時点の要求も、set_root() で登録された後に表示される。
+    """
 
     _root: Optional[tk.Tk] = None
+    _queue: "queue.Queue" = queue.Queue()
 
     @classmethod
     def set_root(cls, root: tk.Tk):
-        """Tkinter ルートウィンドウを設定"""
+        """Tkinter ルートウィンドウを設定し、ダイアログ要求の監視を始める
+
+        メインスレッドから呼ぶこと。
+        """
         cls._root = root
+        cls._poll()
 
     @classmethod
-    def show_error(cls, error_type: str, details: Optional[str] = None) -> bool:
+    def _poll(cls):
+        root = cls._root
+        try:
+            while True:
+                show_func, title, message = cls._queue.get_nowait()
+                cls._show_now(show_func, title, message)
+        except queue.Empty:
+            pass
+
+        try:
+            root.after(DIALOG_POLL_INTERVAL_MS, cls._poll)
+        except tk.TclError:
+            # ルートウィンドウが破棄された（終了処理中）
+            pass
+
+    @classmethod
+    def _show_now(cls, show_func: Callable, title: str, message: str):
+        try:
+            if cls._root is not None:
+                show_func(title, message, parent=cls._root)
+            else:
+                show_func(title, message)
+        except Exception as e:
+            logger.warning(f"Could not show dialog '{title}': {e}")
+
+    @classmethod
+    def _dispatch(cls, show_func: Callable, title: str, message: str):
+        if threading.current_thread() is threading.main_thread():
+            cls._show_now(show_func, title, message)
+        else:
+            cls._queue.put((show_func, title, message))
+
+    @classmethod
+    def show_error(cls, error_type: str, details: Optional[str] = None):
         """エラーダイアログを表示
 
         Args:
             error_type: エラータイプ (ERROR_MESSAGES のキー)
             details: 追加の詳細情報
-
-        Returns:
-            ユーザーがアクションを選択した場合は True
         """
         error_info = ERROR_MESSAGES.get(error_type, ERROR_MESSAGES["unknown_error"])
 
@@ -104,26 +152,25 @@ class ErrorHandler:
 
         logger.error(f"[{error_type}] {title}: {details or ''}")
 
-        messagebox.showerror(title, message)
-        return False
+        cls._dispatch(messagebox.showerror, title, message)
 
     @classmethod
     def show_warning(cls, title: str, message: str):
         """警告ダイアログを表示"""
         logger.warning(f"{title}: {message}")
-        messagebox.showwarning(title, message)
+        cls._dispatch(messagebox.showwarning, title, message)
 
     @classmethod
     def show_info(cls, title: str, message: str):
         """情報ダイアログを表示"""
         logger.info(f"{title}: {message}")
-        messagebox.showinfo(title, message)
+        cls._dispatch(messagebox.showinfo, title, message)
 
 
 # 便利な関数
-def show_error(error_type: str, details: Optional[str] = None) -> bool:
+def show_error(error_type: str, details: Optional[str] = None):
     """エラーを表示（ショートカット関数）"""
-    return ErrorHandler.show_error(error_type, details)
+    ErrorHandler.show_error(error_type, details)
 
 
 def show_warning(title: str, message: str):
