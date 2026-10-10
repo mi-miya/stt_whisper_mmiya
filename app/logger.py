@@ -1,6 +1,11 @@
 import logging
 import sys
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
+
+# app.log が際限なく肥大化しないよう、この大きさで app.log.1 〜 に退避する
+LOG_MAX_BYTES = 5 * 1024 * 1024
+LOG_BACKUP_COUNT = 3
 
 def setup_logger(name: str = "local_dictation"):
     logger = logging.getLogger(name)
@@ -17,7 +22,12 @@ def setup_logger(name: str = "local_dictation"):
         # File handler
         log_dir = Path("logs")
         log_dir.mkdir(exist_ok=True)
-        fh = logging.FileHandler(log_dir / "app.log", encoding="utf-8")
+        fh = RotatingFileHandler(
+            log_dir / "app.log",
+            maxBytes=LOG_MAX_BYTES,
+            backupCount=LOG_BACKUP_COUNT,
+            encoding="utf-8",
+        )
         fh.setLevel(logging.DEBUG)
         fh.setFormatter(formatter)
         logger.addHandler(fh)
