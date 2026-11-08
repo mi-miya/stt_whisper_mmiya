@@ -27,11 +27,13 @@ def _get_work_area():
 
 
 class FloatingWidget:
-    def __init__(self, on_click_callback, on_exit_callback, on_settings_callback=None):
+    def __init__(self, on_click_callback, on_exit_callback, on_settings_callback=None,
+                 on_restart_callback=None):
         self.root = tk.Tk()
         self.on_click_callback = on_click_callback
         self.on_exit_callback = on_exit_callback
         self.on_settings_callback = on_settings_callback
+        self.on_restart_callback = on_restart_callback
 
         # Window configuration
         self.root.overrideredirect(True)  # Frameless
@@ -63,6 +65,8 @@ class FloatingWidget:
 
         self.menu = tk.Menu(self.root, tearoff=0)
         self.menu.add_command(label="設定", command=self.show_settings)
+        if self.on_restart_callback:
+            self.menu.add_command(label="再起動", command=self.on_restart_callback)
         self.menu.add_separator()
         self.menu.add_command(label="終了", command=self.exit_app)
 

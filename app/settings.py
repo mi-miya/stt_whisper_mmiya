@@ -36,6 +36,13 @@ COMPUTE_TYPE_OPTIONS = [
     ("float32 (互換性重視)", "float32"),
 ]
 
+DEFAULT_INITIAL_PROMPT = "はい、では始めます。今日の打ち合わせでは、資料の修正点と次回の日程について確認しました。よろしくお願いします。"
+
+# 以前の既定値だった指示文。お手本の文になっていないため、起動時に新しい既定値へ置き換える
+_OLD_DEFAULT_PROMPTS = (
+    "日本語の音声認識を行います。以下の文章は日本語で、日常会話やビジネス文書の内容です。句読点や改行を適切に挿入してください。専門用語や固有名詞は正確に認識してください。",
+)
+
 # 非推奨フィールド（保存時に自動削除）
 _DEPRECATED_KEYS = ['whisper_cli_path', 'model_path', 'n_gpu_layers', 'best_of', 'carry_initial_prompt', 'batch_size', 'chunk_length_s']
 
@@ -88,6 +95,10 @@ def migrate_config(data: dict) -> dict:
         migrated['device'] = 'auto' if gpu_layers > 0 else 'cpu'
         logger.info(f"Migrated n_gpu_layers={gpu_layers} -> device='{migrated['device']}'")
 
+    if migrated.get('initial_prompt') in _OLD_DEFAULT_PROMPTS:
+        migrated['initial_prompt'] = DEFAULT_INITIAL_PROMPT
+        logger.info("Migrated old default initial_prompt to example-sentence style")
+
     # 不要になったフィールドを削除
     for old_key in _DEPRECATED_KEYS:
         if old_key in migrated:
@@ -110,12 +121,24 @@ class Settings(BaseModel):
     temp_dir: str = ""
     audio_device: Optional[int] = None
     sample_rate: int = 16000
-    initial_prompt: str = "日本語の音声認識を行います。以下の文章は日本語で、日常会話やビジネス文書の内容です。句読点や改行を適切に挿入してください。専門用語や固有名詞は正確に認識してください。"
+    # Whisper はプロンプトを指示として読まず「直前に話された文」として扱う。
+    # 指示文ではなく、出てほしい書き方（句読点・漢字の使い方・固有名詞）の
+    # お手本になる文を置く
+    initial_prompt: str = DEFAULT_INITIAL_PROMPT
     sound_enabled: bool = True
     beam_size: int = 1
     temperature: float = 0.0
     silence_threshold: int = 500  # 発話/無音の判定閾値
     noise_floor: int = 200  # この振幅以下の音は無視
+    # 無音区間を切ってから認識する（無音から文がでっち上げられるのを防ぐ）
+    vad_filter: bool = True
+    highpass_hz: int = 80  # この周波数以下の低音を落とす (0 で無効)
+    normalize_audio: bool = True  # 音量をそろえてから認識する
+    # 調整・デバッグ用に、録音と結果を logs/history/ に残す
+    debug_history_enabled: bool = True
+    debug_history_days: int = 14
+    # 起動からこの時間がたったら、使っていないときに自動で再起動する (0 で無効)
+    auto_restart_hours: int = 6
     widget_x: Optional[int] = None  # フローティングアイコンの保存位置 (未設定なら画面左下)
     widget_y: Optional[int] = None
 

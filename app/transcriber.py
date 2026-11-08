@@ -1,6 +1,8 @@
 import re
 import threading
 import time
+from dataclasses import dataclass, field
+from typing import Optional
 from .settings import current_settings
 from .logger import logger
 from .error_handler import show_error
@@ -30,6 +32,34 @@ def extract_language_code(language: str) -> str:
     if match:
         return match.group(1)
     return language
+
+
+@dataclass
+class TranscriptionResult:
+    text: str = ""
+    # セグメントごとの区間と信頼度（デバッグ履歴用）
+    segments: list = field(default_factory=list)
+    elapsed: float = 0.0
+    device: Optional[str] = None
+    # VAD で無音を切ったあとの長さ（秒）
+    duration_after_vad: Optional[float] = None
+    error: Optional[str] = None
+
+
+def _segment_detail(segment) -> dict:
+    """認識が怪しい箇所を後から見分けるための値を残す
+
+    avg_logprob が低い・no_speech_prob が高い・compression_ratio が高い
+    （同じ言葉の繰り返し）セグメントは、誤認識やでっち上げの疑いがある。
+    """
+    return {
+        "start": round(segment.start, 2),
+        "end": round(segment.end, 2),
+        "text": segment.text,
+        "avg_logprob": round(segment.avg_logprob, 3),
+        "no_speech_prob": round(segment.no_speech_prob, 3),
+        "compression_ratio": round(segment.compression_ratio, 3),
+    }
 
 
 class Transcriber:
@@ -76,6 +106,7 @@ class Transcriber:
             # 発話ごとに独立した文字起こしを行うため前セグメントへの
             # 条件付けは無効化する（繰り返しハルシネーション対策も兼ねる）
             "condition_on_previous_text": False,
+            "vad_filter": current_settings.vad_filter,
         }
         if current_settings.initial_prompt:
             kwargs["initial_prompt"] = current_settings.initial_prompt
@@ -99,6 +130,11 @@ class Transcriber:
         # 完全な無音だと内部で短絡して推論パスが温まらないため、
         # 低振幅のホワイトノイズを 1 秒生成する
         audio = (np_mod.random.randn(sample_rate) * (50.0 / 32768.0)).astype(np_mod.float32)
+
+        # 前処理が使う scipy.signal は読み込みに 0.3 秒ほどかかるため、
+        # 初回の録音で待たせないよう、ここで一度通しておく
+        from .audio_preprocess import preprocess
+        preprocess(audio, sample_rate, highpass_hz=80, normalize=True)
 
         language, kwargs = self._build_transcribe_kwargs()
         segments, _ = self._model.transcribe(audio, language=language, **kwargs)
@@ -216,39 +252,49 @@ class Transcriber:
         logger.info("Previous model load failed, retrying...")
         return self.warmup()
 
-    def _run_transcription(self, audio, language, kwargs: dict) -> str:
-        segments, _ = self._model.transcribe(audio, language=language, **kwargs)
-        return "".join(segment.text for segment in segments).strip().replace("\u3000", "")
+    def _run_transcription(self, audio, language, kwargs: dict) -> TranscriptionResult:
+        start = time.time()
+        segments, info = self._model.transcribe(audio, language=language, **kwargs)
+        # segments \u306f\u30b8\u30a7\u30cd\u30ec\u30fc\u30bf\u3067\u3001\u56de\u3057\u305f\u3068\u304d\u306b\u521d\u3081\u3066\u63a8\u8ad6\u304c\u8d70\u308b
+        details = [_segment_detail(segment) for segment in segments]
+        text = "".join(d["text"] for d in details).strip().replace("\u3000", "")
+        return TranscriptionResult(
+            text=text,
+            segments=details,
+            elapsed=time.time() - start,
+            device=self._device,
+            duration_after_vad=round(info.duration_after_vad, 2),
+        )
 
-    def transcribe(self, audio) -> str:
+    def transcribe(self, audio) -> TranscriptionResult:
         """音声データ (float32 / 16kHz の numpy 配列) を文字起こしする"""
         if not self.ensure_ready():
-            return ""
+            return TranscriptionResult(error="model_not_ready")
 
         language, kwargs = self._build_transcribe_kwargs()
 
         logger.info(f"Running transcription: model={current_settings.model_name}")
 
         try:
-            text = self._run_transcription(audio, language, kwargs)
+            result = self._run_transcription(audio, language, kwargs)
         except Exception as e:
             error_msg = str(e)
             logger.exception(f"Transcription error: {error_msg}")
 
             if self._device == "cuda" and is_gpu_error(error_msg):
-                text = self._retry_on_cpu(audio, language, kwargs, error_msg)
+                result = self._retry_on_cpu(audio, language, kwargs, error_msg)
             else:
                 show_error("transcription_failed", error_msg[:200])
-                return ""
+                return TranscriptionResult(error=error_msg)
 
-        if not text:
+        if not result.text:
             logger.warning("Transcription returned empty text")
         else:
-            logger.info(f"Transcribed length: {len(text)}")
+            logger.info(f"Transcribed length: {len(result.text)} in {result.elapsed:.2f}s")
 
-        return text
+        return result
 
-    def _retry_on_cpu(self, audio, language, kwargs: dict, gpu_error_msg: str) -> str:
+    def _retry_on_cpu(self, audio, language, kwargs: dict, gpu_error_msg: str) -> TranscriptionResult:
         """GPUエラー時にCPUへ切り替え、同じ音声をもう一度文字起こしする
 
         話した内容を捨てずに済むよう、切り替え後に再実行する。
@@ -261,7 +307,7 @@ class Transcriber:
             # モデルが無い状態で残さない。次回の文字起こし時にロードし直す
             self._mark_load_failed()
             show_error("gpu_error", gpu_error_msg[:200])
-            return ""
+            return TranscriptionResult(error=gpu_error_msg)
 
         show_error("gpu_error", f"CPUモードに切り替えました。\n{gpu_error_msg[:200]}")
 
@@ -270,7 +316,7 @@ class Transcriber:
         except Exception as e:
             logger.exception(f"Transcription error on CPU fallback: {e}")
             show_error("transcription_failed", str(e)[:200])
-            return ""
+            return TranscriptionResult(error=str(e))
 
     def cleanup(self):
         """モデルを解放"""

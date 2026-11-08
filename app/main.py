@@ -2,6 +2,8 @@ import pystray
 from PIL import Image, ImageDraw
 import threading
 import sys
+import os
+import logging
 import ctypes
 import time
 from pathlib import Path
@@ -13,6 +15,7 @@ from .transcriber import Transcriber
 from .clipboard_win import set_text, paste_text
 from .hotkey_win import HotkeyListener
 from . import sounds
+from . import debug_history
 
 # States
 IDLE = "IDLE"
@@ -20,6 +23,10 @@ RECORDING = "RECORDING"
 TRANSCRIBING = "TRANSCRIBING"
 
 VK_ESCAPE = 0x1B
+
+# 自動再起動するのは、使われていない状態がこれだけ続いたとき
+AUTO_RESTART_IDLE = 10 * 60
+AUTO_RESTART_CHECK_MS = 60 * 1000
 
 MUTEX_NAME = "LocalWhisperDictation_Mutex"
 ERROR_ALREADY_EXISTS = 183
@@ -30,12 +37,22 @@ _mutex_handle = None
 def ensure_single_instance():
     """二重起動を防止する。既に起動中ならメッセージを表示して終了する。"""
     global _mutex_handle
-    _mutex_handle = ctypes.windll.kernel32.CreateMutexW(None, False, MUTEX_NAME)
-    if ctypes.windll.kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
-        ctypes.windll.user32.MessageBoxW(
-            0, "音声入力ツールは既に起動しています。\nタスクトレイまたは画面上のアイコンを確認してください。",
-            "音声入力ツール", 0x40)
-        sys.exit(0)
+    kernel32 = ctypes.windll.kernel32
+    # 再起動では、古いプロセスが終わりきる直前に新しいプロセスが立ち上がる。
+    # 取りこぼして「既に起動しています」と出さないよう、少し待って判定し直す
+    attempts = 20 if "--restarted" in sys.argv else 1
+    for attempt in range(attempts):
+        _mutex_handle = kernel32.CreateMutexW(None, False, MUTEX_NAME)
+        if kernel32.GetLastError() != ERROR_ALREADY_EXISTS:
+            return
+        kernel32.CloseHandle(_mutex_handle)
+        _mutex_handle = None
+        if attempt < attempts - 1:
+            time.sleep(0.25)
+    ctypes.windll.user32.MessageBoxW(
+        0, "音声入力ツールは既に起動しています。\nタスクトレイまたは画面上のアイコンを確認してください。",
+        "音声入力ツール", 0x40)
+    sys.exit(0)
 
 
 def release_single_instance():
@@ -53,6 +70,15 @@ class MainApp:
         self.icon = None
         self.hotkey_thread = None
         self.gui = None # Tkinter widget reference
+        self._settings_dialog = None
+
+        # 自動再起動の判定用
+        self._started = time.monotonic()
+        self._last_active = self._started
+        if "--auto" in sys.argv:
+            logger.info("Started (auto restart after long uptime)")
+        elif "--restarted" in sys.argv:
+            logger.info("Started (restarted)")
 
         # Lock for state transition
         self.lock = threading.Lock()
@@ -88,6 +114,7 @@ class MainApp:
             "LocalDictation",
             self.create_image("green"),
             menu=pystray.Menu(
+                pystray.MenuItem("再起動", lambda icon, item: self.restart_app()),
                 pystray.MenuItem("Exit", self.exit_app)
             )
         )
@@ -113,6 +140,7 @@ class MainApp:
 
     def on_hotkey(self):
         """ホットキーコールバック"""
+        self._mark_active()
         # 状態を確認してアクションを決定（ロックを最小限に保持）
         with self.lock:
             current_state = self.state
@@ -173,9 +201,12 @@ class MainApp:
         t.start()
 
     def _transcribe_task(self):
+        stopped_at = time.time()
+        capture = None
+        result = None
         try:
-            audio = self.recorder.stop()
-            if audio is None:
+            capture = self.recorder.stop()
+            if capture is None or capture.audio is None:
                 # Failed to record or short or silent
                 logger.info("Recording was silent or invalid. Returning to IDLE.")
                 sounds.play_cancel()
@@ -193,18 +224,23 @@ class MainApp:
                     sounds.play_cancel()
                     return
 
-            text = self.transcriber.transcribe(audio)
-            if text:
-                set_text(text)
+            result = self.transcriber.transcribe(capture.audio)
+            if result.text:
+                set_text(result.text)
                 if current_settings.auto_paste:
                     paste_text()
                 sounds.play_finish()
             else:
                 sounds.play_cancel()
         finally:
+            finished_at = time.time()
+            self._mark_active()
             with self.lock:
                 self.state = IDLE
                 self.update_icon_state()
+            # 待ち時間を延ばさないよう、貼り付けと状態の復帰が済んでから書く
+            if capture is not None:
+                debug_history.record(capture, result, stopped_at, finished_at)
 
     def run_hotkey(self):
         logger.info(f"App starting. Hotkey: {current_settings.hotkey}")
@@ -241,15 +277,46 @@ class MainApp:
                 logger.info("Settings saved. Restarting application...")
                 self.restart_app()
 
-        SettingsDialog(self.gui.root, current_dict, on_save)
+        self._settings_dialog = SettingsDialog(self.gui.root, current_dict, on_save)
 
-    def restart_app(self):
-        """アプリケーションを再起動"""
-        logger.info("Restarting application...")
+    def _mark_active(self):
+        self._last_active = time.monotonic()
 
-        # 現在のプロセスを終了して再起動
-        python = sys.executable
-        script = sys.argv[0]
+    def auto_restart_due(self) -> bool:
+        """長く動き続けたあと、使われていない時間が続いたら再起動どきとみなす
+
+        録音中・文字起こし中・設定画面を開いている間は、使用中として扱う。
+        """
+        hours = current_settings.auto_restart_hours
+        if hours <= 0:
+            return False
+
+        dialog = self._settings_dialog
+        dialog_open = dialog is not None and dialog.window.winfo_exists()
+        if self.state != IDLE or dialog_open:
+            self._mark_active()
+
+        now = time.monotonic()
+        return (now - self._started >= hours * 3600
+                and now - self._last_active >= AUTO_RESTART_IDLE)
+
+    def schedule_auto_restart_check(self):
+        """Tk のスレッドで定期的に、自動再起動の時期かどうかを確かめる"""
+        if self.auto_restart_due():
+            uptime_hours = (time.monotonic() - self._started) / 3600
+            logger.info(f"Auto restart: running for {uptime_hours:.1f}h and idle")
+            self.restart_app(auto=True)
+            return
+        self.gui.root.after(AUTO_RESTART_CHECK_MS, self.schedule_auto_restart_check)
+
+    def restart_app(self, auto=False):
+        """アプリケーションを再起動
+
+        新しいプロセスを立ち上げてから自分は終わる。設定の反映のほか、
+        動きが悪くなったときにメニューから、また長時間動かしたあとの
+        空き時間にも自動で呼ばれる。
+        """
+        logger.info(f"Restarting application... (auto={auto})")
 
         # リソースをクリーンアップ
         self.transcriber.cleanup()
@@ -269,10 +336,14 @@ class MainApp:
 
         # 新しいプロセスを起動
         import subprocess
-        subprocess.Popen([python, "-m", "app.main"], cwd=str(Path.cwd()))
-
-        # 現在のプロセスを終了
-        sys.exit(0)
+        args = [sys.executable, "-m", "app.main", "--restarted"] + (["--auto"] if auto else [])
+        try:
+            subprocess.Popen(args, cwd=str(Path.cwd()))
+        finally:
+            # トレイのスレッドから呼ばれても確実にプロセスごと終わるよう、
+            # sys.exit ではなく os._exit を使う。ログは先に書き出しておく
+            logging.shutdown()
+            os._exit(0)
 
     def exit_app(self, icon, item):
         logger.info("Exit requested")
@@ -329,8 +400,10 @@ if __name__ == "__main__":
         app.gui = FloatingWidget(
             on_click_callback=app.on_hotkey,
             on_exit_callback=lambda: app.exit_app(None, None),
-            on_settings_callback=app.show_settings_dialog
+            on_settings_callback=app.show_settings_dialog,
+            on_restart_callback=app.restart_app,
         )
+        app.gui.root.after(AUTO_RESTART_CHECK_MS, app.schedule_auto_restart_check)
 
         # ワーカースレッドからのエラーダイアログをメインスレッドで表示させる
         ErrorHandler.set_root(app.gui.root)

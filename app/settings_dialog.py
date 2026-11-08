@@ -215,6 +215,11 @@ class SettingsDialog:
         self.var_initial_prompt = tk.StringVar(value=s.get('initial_prompt', ''))
         self.var_beam_size = tk.IntVar(value=s.get('beam_size', 1))
         self.var_temperature = tk.DoubleVar(value=s.get('temperature', 0.0))
+        self.var_vad_filter = tk.BooleanVar(value=s.get('vad_filter', True))
+        self.var_highpass_hz = tk.IntVar(value=s.get('highpass_hz', 80))
+        self.var_normalize_audio = tk.BooleanVar(value=s.get('normalize_audio', True))
+        self.var_debug_history_enabled = tk.BooleanVar(value=s.get('debug_history_enabled', True))
+        self.var_debug_history_days = tk.IntVar(value=s.get('debug_history_days', 14))
 
     def _build_ui(self):
         """UIを構築"""
@@ -472,11 +477,40 @@ class SettingsDialog:
 
         row += 1
 
+        ttk.Separator(tab, orient='horizontal').grid(row=row, column=0, columnspan=2, sticky='ew', pady=10)
+        row += 1
+
+        # 音声の前処理
+        ttk.Checkbutton(tab, text="無音区間を除いて認識する (VAD)", variable=self.var_vad_filter).grid(row=row, column=0, columnspan=2, sticky='w', pady=2)
+        row += 1
+
+        ttk.Label(tab, text="低音カット:").grid(row=row, column=0, sticky='w', pady=5)
+        hp_frame = ttk.Frame(tab)
+        hp_frame.grid(row=row, column=1, sticky='w', pady=5)
+        ttk.Spinbox(hp_frame, from_=0, to=300, increment=10, textvariable=self.var_highpass_hz, width=10).pack(side='left')
+        ttk.Label(hp_frame, text="Hz 以下を落とす (0 = 無効)", foreground='gray').pack(side='left', padx=(10, 0))
+        row += 1
+
+        ttk.Checkbutton(tab, text="音量をそろえてから認識する", variable=self.var_normalize_audio).grid(row=row, column=0, columnspan=2, sticky='w', pady=2)
+        row += 1
+
+        ttk.Separator(tab, orient='horizontal').grid(row=row, column=0, columnspan=2, sticky='ew', pady=10)
+        row += 1
+
+        # デバッグ履歴
+        hist_frame = ttk.Frame(tab)
+        hist_frame.grid(row=row, column=0, columnspan=2, sticky='w', pady=2)
+        ttk.Checkbutton(hist_frame, text="録音と結果を logs/history に残す", variable=self.var_debug_history_enabled).pack(side='left')
+        ttk.Spinbox(hist_frame, from_=1, to=90, textvariable=self.var_debug_history_days, width=5).pack(side='left', padx=(10, 0))
+        ttk.Label(hist_frame, text="日間").pack(side='left', padx=(5, 0))
+        row += 1
+
         # 説明
         ttk.Separator(tab, orient='horizontal').grid(row=row, column=0, columnspan=2, sticky='ew', pady=10)
         row += 1
 
-        info_text = "初期プロンプト: 認識精度を向上させるヒントを入力します。\n例: 「日本語です。」「技術的な内容を話しています。」"
+        info_text = ("初期プロンプト: 指示文ではなく、出てほしい書き方のお手本の文を書きます。\n"
+                     "よく使う固有名詞・専門用語を句読点つきの自然な文に入れると効きます。")
         ttk.Label(tab, text=info_text, foreground='gray').grid(row=row, column=0, columnspan=2, sticky='w')
 
         tab.columnconfigure(1, weight=1)
@@ -572,6 +606,11 @@ class SettingsDialog:
             new_settings['initial_prompt'] = self.prompt_text.get('1.0', 'end-1c')
             new_settings['beam_size'] = self.var_beam_size.get()
             new_settings['temperature'] = self.var_temperature.get()
+            new_settings['vad_filter'] = self.var_vad_filter.get()
+            new_settings['highpass_hz'] = self.var_highpass_hz.get()
+            new_settings['normalize_audio'] = self.var_normalize_audio.get()
+            new_settings['debug_history_enabled'] = self.var_debug_history_enabled.get()
+            new_settings['debug_history_days'] = self.var_debug_history_days.get()
 
             # ホットキー
             hotkey = self.hotkey_capture.get()
