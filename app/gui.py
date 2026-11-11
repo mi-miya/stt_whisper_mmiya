@@ -28,12 +28,14 @@ def _get_work_area():
 
 class FloatingWidget:
     def __init__(self, on_click_callback, on_exit_callback, on_settings_callback=None,
-                 on_restart_callback=None):
+                 on_restart_callback=None, on_keep_mic_open_callback=None, keep_mic_open=False):
         self.root = tk.Tk()
         self.on_click_callback = on_click_callback
         self.on_exit_callback = on_exit_callback
         self.on_settings_callback = on_settings_callback
         self.on_restart_callback = on_restart_callback
+        self.on_keep_mic_open_callback = on_keep_mic_open_callback
+        self.keep_mic_open_var = tk.BooleanVar(master=self.root, value=keep_mic_open)
 
         # Window configuration
         self.root.overrideredirect(True)  # Frameless
@@ -65,6 +67,12 @@ class FloatingWidget:
 
         self.menu = tk.Menu(self.root, tearoff=0)
         self.menu.add_command(label="設定", command=self.show_settings)
+        if self.on_keep_mic_open_callback:
+            self.menu.add_checkbutton(
+                label="常時通話モード (Bluetooth イヤホン用)",
+                variable=self.keep_mic_open_var,
+                command=lambda: self.on_keep_mic_open_callback(self.keep_mic_open_var.get()),
+            )
         if self.on_restart_callback:
             self.menu.add_command(label="再起動", command=self.on_restart_callback)
         self.menu.add_separator()
@@ -163,6 +171,10 @@ class FloatingWidget:
     def exit_app(self):
         if self.on_exit_callback:
             self.on_exit_callback()
+
+    def set_keep_mic_open(self, enabled):
+        """メニューのチェックを、起動時の質問などで決まった値に合わせる"""
+        self.root.after(0, lambda: self.keep_mic_open_var.set(enabled))
 
     def set_state(self, state, color):
         # This must be called from the main thread

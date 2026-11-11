@@ -3,7 +3,7 @@ import os
 import shutil
 from pathlib import Path
 from typing import Optional
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from .logger import logger
 
 
@@ -36,7 +36,27 @@ COMPUTE_TYPE_OPTIONS = [
     ("float32 (互換性重視)", "float32"),
 ]
 
-DEFAULT_INITIAL_PROMPT = "はい、では始めます。今日の打ち合わせでは、資料の修正点と次回の日程について確認しました。よろしくお願いします。"
+# 常時通話モードの説明（セットアップ・起動時の質問・設定画面で使う）
+KEEP_MIC_OPEN_EXPLANATION = (
+    "Bluetooth イヤホンのマイクで話すと、話し始めの1〜2秒が録音されないことがあります。\n"
+    "マイクを使うたびに、イヤホンが通話用のモードへ切り替わるのに時間がかかるためです。\n"
+    "\n"
+    "常時通話モードをオンにすると、マイクを開いたままにするので、押してすぐ話しても切れません。\n"
+    "押す直前（1秒）の音も録音に含めます。\n"
+    "\n"
+    "その代わり、オンの間は次のようになります。\n"
+    "・イヤホンの音が、通話の音質（こもった音）になります\n"
+    "・タスクバーに「マイク使用中」の表示が出たままになります\n"
+    "（録音して文字にするのはホットキーを押している間だけです）"
+)
+KEEP_MIC_OPEN_QUESTION = (
+    "常時通話モードを使いますか？\n\n"
+    + KEEP_MIC_OPEN_EXPLANATION
+    + "\n\nBluetooth イヤホンを使っていない場合は「いいえ」を選んでください。\n"
+    "あとから右クリックメニューや設定画面で、いつでも切り替えられます。"
+)
+
+DEFAULT_INITIAL_PROMPT ="はい、では始めます。今日の打ち合わせでは、資料の修正点と次回の日程について確認しました。よろしくお願いします。"
 
 # 以前の既定値だった指示文。お手本の文になっていないため、起動時に新しい既定値へ置き換える
 _OLD_DEFAULT_PROMPTS = (
@@ -126,6 +146,11 @@ class Settings(BaseModel):
     # お手本になる文を置く
     initial_prompt: str = DEFAULT_INITIAL_PROMPT
     sound_enabled: bool = True
+    sound_volume: int = Field(default=30, ge=0, le=100)  # 効果音の大きさ (0〜100)
+    # 常時通話モード: マイクを開いたままにする。Bluetooth イヤホンは、マイクを開くたびに
+    # 通話用のモードへ切り替わるのに 1〜2 秒かかり、話し始めが録音されないため。
+    # None はまだ利用者に聞いていない状態（起動時に一度だけ聞く）
+    keep_mic_open: Optional[bool] = None
     beam_size: int = 1
     temperature: float = 0.0
     silence_threshold: int = 500  # 発話/無音の判定閾値

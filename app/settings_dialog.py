@@ -6,6 +6,24 @@ from .logger import logger
 from .settings import AVAILABLE_MODELS, LANGUAGES, DEVICE_OPTIONS, COMPUTE_TYPE_OPTIONS
 
 
+def build_volume_slider(parent, var: tk.IntVar):
+    """効果音の音量スライダーと「試し聞き」ボタンを parent に並べる（設定画面とセットアップで共用）"""
+    from . import sounds
+
+    def on_move(value):
+        # ttk.Scale は小数を渡してくるので、整数にそろえる
+        var.set(int(float(value)))
+        label.config(text=str(var.get()))
+
+    scale = ttk.Scale(parent, from_=0, to=100, orient='horizontal', length=180)
+    scale.set(var.get())
+    scale.config(command=on_move)
+    scale.pack(side='left')
+    label = ttk.Label(parent, text=str(var.get()), width=4)
+    label.pack(side='left', padx=(5, 0))
+    ttk.Button(parent, text="試し聞き", command=lambda: sounds.preview(var.get())).pack(side='left', padx=(5, 0))
+
+
 class HotkeyCapture:
     """ホットキーをキャプチャするためのウィジェット"""
 
@@ -163,7 +181,7 @@ class SettingsDialog:
         # ダイアログウィンドウ作成
         self.window = tk.Toplevel(parent)
         self.window.title("設定")
-        self.window.geometry("550x550")
+        self.window.geometry("600x620")
         self.window.resizable(True, True)
 
         # モーダルダイアログとして設定
@@ -203,6 +221,8 @@ class SettingsDialog:
         sound_enabled_value = s.get('sound_enabled', True)
         logger.info(f"Initializing sound_enabled with value: {sound_enabled_value}")
         self.var_sound_enabled = tk.BooleanVar(value=sound_enabled_value)
+        self.var_sound_volume = tk.IntVar(value=s.get('sound_volume', 30))
+        self.var_keep_mic_open = tk.BooleanVar(value=bool(s.get('keep_mic_open')))
 
         # 詳細設定
         self.var_device = tk.StringVar(value=s.get('device', 'auto'))
@@ -293,6 +313,28 @@ class SettingsDialog:
             variable=self.var_sound_enabled
         )
         self.sound_checkbox.grid(row=row, column=0, columnspan=2, sticky='w', pady=5)
+        row += 1
+
+        # 効果音の音量
+        ttk.Label(tab, text="効果音の音量:").grid(row=row, column=0, sticky='w', pady=5)
+        volume_frame = ttk.Frame(tab)
+        volume_frame.grid(row=row, column=1, sticky='w', pady=5)
+        build_volume_slider(volume_frame, self.var_sound_volume)
+        row += 1
+
+        # 常時通話モード
+        ttk.Checkbutton(
+            tab,
+            text="常時通話モード (Bluetooth イヤホンで話し始めが切れるのを防ぐ)",
+            variable=self.var_keep_mic_open
+        ).grid(row=row, column=0, columnspan=2, sticky='w', pady=(10, 2))
+        row += 1
+        ttk.Label(
+            tab,
+            text="オンの間はマイクを開いたままにします。イヤホンの音は通話の音質(こもった音)になります。\n"
+                 "右クリックメニューからも切り替えられます。",
+            foreground='gray'
+        ).grid(row=row, column=0, columnspan=2, sticky='w')
         row += 1
 
         # 説明
@@ -594,6 +636,8 @@ class SettingsDialog:
             sound_enabled_save = self.var_sound_enabled.get()
             logger.info(f"Saving sound_enabled with value: {sound_enabled_save}")
             new_settings['sound_enabled'] = sound_enabled_save
+            new_settings['sound_volume'] = int(self.var_sound_volume.get())
+            new_settings['keep_mic_open'] = self.var_keep_mic_open.get()
 
             # 詳細設定
             new_settings['device'] = self.var_device.get()

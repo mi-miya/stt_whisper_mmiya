@@ -3,7 +3,11 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 from typing import Callable, Dict, Any
 from .logger import logger
-from .settings import save_settings, Settings, AVAILABLE_MODELS, LANGUAGES, DEVICE_OPTIONS
+from .settings import (save_settings, Settings, AVAILABLE_MODELS, LANGUAGES, DEVICE_OPTIONS,
+                       KEEP_MIC_OPEN_EXPLANATION)
+
+WIZARD_WIDTH = 600
+WIZARD_HEIGHT = 560
 
 
 class SetupWizard:
@@ -19,7 +23,7 @@ class SetupWizard:
         self.on_cancel = on_cancel
 
         self.current_step = 0
-        self.total_steps = 4
+        self.total_steps = 5
 
         # 設定を格納
         self.settings: Dict[str, Any] = Settings().model_dump()
@@ -27,7 +31,7 @@ class SetupWizard:
         # ウィンドウ作成
         self.root = tk.Tk()
         self.root.title("ローカルWhisper セットアップ")
-        self.root.geometry("550x450")
+        self.root.geometry(f"{WIZARD_WIDTH}x{WIZARD_HEIGHT}")
         self.root.resizable(False, False)
 
         # 画面中央に配置
@@ -75,8 +79,8 @@ class SetupWizard:
     def _center_window(self):
         """ウィンドウを画面中央に配置"""
         self.root.update_idletasks()
-        width = 550
-        height = 450
+        width = WIZARD_WIDTH
+        height = WIZARD_HEIGHT
         x = (self.root.winfo_screenwidth() // 2) - (width // 2)
         y = (self.root.winfo_screenheight() // 2) - (height // 2)
         self.root.geometry(f'{width}x{height}+{x}+{y}')
@@ -109,20 +113,26 @@ class SetupWizard:
         self._clear_content()
         self._update_nav()
 
-        step_methods = [
+        step_methods = self._steps()
+        if 0 <= step < len(step_methods):
+            step_methods[step]()
+
+    def _steps(self):
+        return [
             self._step_welcome,
             self._step_model,
             self._step_basic_settings,
+            self._step_earphone,
             self._step_complete,
         ]
-
-        if 0 <= step < len(step_methods):
-            step_methods[step]()
 
     def _next_step(self):
         """次のステップへ"""
         if self.current_step == self.total_steps - 1:
             self._finish()
+        elif (self._steps()[self.current_step] == self._step_earphone
+              and self.settings.get('keep_mic_open') is None):
+            messagebox.showinfo("確認", "常時通話モードを使うかどうかを選んでください。")
         else:
             self._show_step(self.current_step + 1)
 
@@ -170,6 +180,7 @@ class SetupWizard:
 このウィザードでは、以下を設定します:
 1. 音声認識モデルの選択
 2. 基本設定（言語、デバイスなど）
+3. イヤホンと効果音（常時通話モード、音量）
 """
         ttk.Label(
             self.content_frame,
@@ -320,8 +331,57 @@ class SetupWizard:
         """効果音設定変更"""
         self.settings['sound_enabled'] = self.sound_var.get()
 
+    def _step_earphone(self):
+        """ステップ4: イヤホン・効果音"""
+        ttk.Label(
+            self.content_frame,
+            text="イヤホンと効果音",
+            font=('', 14, 'bold')
+        ).pack(pady=(0, 10))
+
+        ttk.Label(
+            self.content_frame,
+            text="常時通話モードを使いますか？",
+            font=('', 10, 'bold')
+        ).pack(anchor='w')
+        ttk.Label(
+            self.content_frame,
+            text=KEEP_MIC_OPEN_EXPLANATION,
+            justify='left',
+            wraplength=WIZARD_WIDTH - 50
+        ).pack(anchor='w', pady=(5, 5))
+
+        # まだ選んでいなければ、どちらにも印を付けない（必ず選んでもらう）
+        current = self.settings.get('keep_mic_open')
+        self.keep_mic_var = tk.StringVar(value='' if current is None else ('yes' if current else 'no'))
+        for label, value in (("使う (Bluetooth イヤホンのマイクで話す)", 'yes'),
+                             ("使わない (Bluetooth イヤホンを使わない・音質を優先する)", 'no')):
+            ttk.Radiobutton(
+                self.content_frame,
+                text=label,
+                variable=self.keep_mic_var,
+                value=value,
+                command=self._on_keep_mic_change
+            ).pack(anchor='w', pady=1)
+
+        ttk.Separator(self.content_frame, orient='horizontal').pack(fill='x', pady=10)
+
+        volume_frame = ttk.Frame(self.content_frame)
+        volume_frame.pack(anchor='w')
+        ttk.Label(volume_frame, text="効果音の音量:").pack(side='left', padx=(0, 10))
+        self.volume_var = tk.IntVar(value=self.settings.get('sound_volume', 30))
+        self.volume_var.trace_add('write', lambda *args: self._on_volume_change())
+        from .settings_dialog import build_volume_slider
+        build_volume_slider(volume_frame, self.volume_var)
+
+    def _on_keep_mic_change(self):
+        self.settings['keep_mic_open'] = self.keep_mic_var.get() == 'yes'
+
+    def _on_volume_change(self):
+        self.settings['sound_volume'] = self.volume_var.get()
+
     def _step_complete(self):
-        """ステップ4: 完了"""
+        """ステップ5: 完了"""
         ttk.Label(
             self.content_frame,
             text="セットアップ完了",
@@ -343,7 +403,8 @@ class SetupWizard:
 言語: {self.settings.get('language', 'ja')}
 デバイス: {device_display}
 自動貼り付け: {'有効' if self.settings.get('auto_paste') else '無効'}
-効果音: {'有効' if self.settings.get('sound_enabled') else '無効'}
+効果音: {f"有効 (音量 {self.settings.get('sound_volume')})" if self.settings.get('sound_enabled') else '無効'}
+常時通話モード: {'使う' if self.settings.get('keep_mic_open') else '使わない'}
 
 使い方:
 1. Ctrl+Alt+Shift+J を押して録音開始

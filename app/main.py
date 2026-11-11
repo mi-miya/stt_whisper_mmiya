@@ -7,7 +7,8 @@ import logging
 import ctypes
 import time
 from pathlib import Path
-from .settings import current_settings, load_settings_as_dict, save_settings, config_load_error
+from .settings import (current_settings, load_settings_as_dict, save_settings, update_settings,
+                       config_load_error, KEEP_MIC_OPEN_QUESTION)
 from .logger import logger
 from .error_handler import ErrorHandler, show_error
 from .recorder import Recorder
@@ -85,6 +86,34 @@ class MainApp:
 
         # バックグラウンドでWhisperモデルをウォームアップ
         self._start_warmup()
+
+        if current_settings.keep_mic_open:
+            self._apply_keep_mic_open(True)
+
+    def _apply_keep_mic_open(self, enabled: bool):
+        # マイクを開くには音声ライブラリの読み込みとイヤホンの切り替えで数秒かかるため、
+        # 画面やホットキーを止めないよう別スレッドで行う
+        threading.Thread(target=self.recorder.set_keep_open, args=(enabled,), daemon=True).start()
+
+    def set_keep_mic_open(self, enabled: bool):
+        """常時通話モードを切り替えて保存する（右クリックメニュー・起動時の質問から）"""
+        logger.info(f"Always-on call mode set to {enabled}")
+        if not update_settings({'keep_mic_open': enabled}):
+            logger.error("Failed to save keep_mic_open")
+        current_settings.keep_mic_open = enabled
+        self._apply_keep_mic_open(enabled)
+        if self.gui:
+            self.gui.set_keep_mic_open(enabled)
+
+    def ask_keep_mic_open(self):
+        """常時通話モードを使うか、まだ答えていない人に一度だけ聞く"""
+        from tkinter import messagebox
+        use = messagebox.askyesno(
+            "音声入力ツール: 常時通話モード",
+            KEEP_MIC_OPEN_QUESTION,
+            parent=self.gui.root if self.gui else None,
+        )
+        self.set_keep_mic_open(bool(use))
 
     def _start_warmup(self):
         """バックグラウンドでWhisperモデルをウォームアップ開始"""
@@ -319,6 +348,7 @@ class MainApp:
         logger.info(f"Restarting application... (auto={auto})")
 
         # リソースをクリーンアップ
+        self.recorder.close()
         self.transcriber.cleanup()
         if self.icon:
             try:
@@ -347,6 +377,7 @@ class MainApp:
 
     def exit_app(self, icon, item):
         logger.info("Exit requested")
+        self.recorder.close()
         self.transcriber.cleanup()
         if self.icon:
             self.icon.stop()
@@ -402,6 +433,8 @@ if __name__ == "__main__":
             on_exit_callback=lambda: app.exit_app(None, None),
             on_settings_callback=app.show_settings_dialog,
             on_restart_callback=app.restart_app,
+            on_keep_mic_open_callback=app.set_keep_mic_open,
+            keep_mic_open=bool(current_settings.keep_mic_open),
         )
         app.gui.root.after(AUTO_RESTART_CHECK_MS, app.schedule_auto_restart_check)
 
@@ -411,6 +444,10 @@ if __name__ == "__main__":
         # 設定ファイルの読み込みに問題があった場合は、起動後に知らせる
         if config_load_error:
             app.gui.root.after(0, lambda: show_error("config_error", config_load_error))
+
+        # 常時通話モードを使うか、まだ答えていなければ聞く（このモードを足す前から使っている人向け）
+        if current_settings.keep_mic_open is None:
+            app.gui.root.after(500, app.ask_keep_mic_open)
 
         # Override exit to close GUI too
         original_exit = app.exit_app
