@@ -185,9 +185,10 @@ class MainApp:
 
     def start_recording(self):
         logger.info("Start Recording")
-        sounds.play_start()
-
-        self.recorder.start()
+        if not self.recorder.start():
+            # エラー表示は recorder 側で済んでいる
+            return
+        # 録音開始の音は鳴らさない（理由は sounds.py の先頭）。アイコンが赤くなったら話してよい
         self.state = RECORDING
         self.update_icon_state()
 

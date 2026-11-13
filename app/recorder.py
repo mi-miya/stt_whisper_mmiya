@@ -238,10 +238,11 @@ class Recorder:
 
     # --- 録音 ---
 
-    def start(self):
+    def start(self) -> bool:
+        """録音を始める。マイクを開けなかったら False を返す"""
         if self.is_recording:
             logger.warning("Attempted to start recording while already recording")
-            return
+            return False
 
         try:
             with self._stream_lock:
@@ -255,20 +256,24 @@ class Recorder:
                         self.is_recording = True
                     self.started_at = time.time() - preroll / self.sample_rate
                     logger.info(f"Recording started (kept-open mic, {preroll / self.sample_rate:.2f}s pre-roll)")
-                    return
+                    return True
 
                 with self._lock:
                     self.frames = []
                     self.is_recording = True
+                opening = time.monotonic()
                 self._open_stream()
+                open_seconds = time.monotonic() - opening
                 self.started_at = time.time()
-            logger.info("Recording started")
+            logger.info(f"Recording started (mic opened in {open_seconds:.2f}s)")
+            return True
         except Exception as e:
             logger.error(f"Failed to start recording: {e}")
             with self._lock:
                 self.is_recording = False
             self._close_stream()
             show_error("recording_failed", str(e))
+            return False
 
     def stop(self, discard=False):
         """録音を停止し、Capture を返す。破棄・失敗時は None を返す。
